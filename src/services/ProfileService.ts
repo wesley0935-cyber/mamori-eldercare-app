@@ -53,16 +53,14 @@ const KEY_ELDER_PROFILE   = 'elder_profile';
 const KEY_ELDER_PAIR_CODE = 'elder_pair_code';
 const KEY_FAMILY_PROFILE  = 'family_profile';
 const KEY_PAIRED_ELDERS   = 'paired_elders';
-const KEY_FAMILY_COUNT    = 'elder_family_count';
 const KEY_FAMILY_MEMBERS  = 'elder_family_members';
 const KEY_INVITE_CODE     = 'family_invite_code';
 
 const PAIR_CODE_EXPIRY_MS = 48 * 60 * 60 * 1000; // 48 hours
 
-// In-memory cache so notification senders don't hit storage on every call
 let _cachedElderName: string | null = null;
 
-// ?�?�?� Pair code ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+// ─── Pair code ────────────────────────────────────────────────────────────────
 
 export async function generatePairCode(): Promise<string> {
   try {
@@ -89,7 +87,6 @@ export async function getElderPairCodeRecord(): Promise<ElderPairCodeRecord | nu
 
 export async function generateAndSavePairCode(): Promise<ElderPairCodeRecord> {
   try {
-    // ?�試從�?端�?得�?對碼
     const { generatePairingCode } = require('../api/pairingApi');
     const result = await generatePairingCode();
     const record: ElderPairCodeRecord = {
@@ -99,7 +96,7 @@ export async function generateAndSavePairCode(): Promise<ElderPairCodeRecord> {
     await AsyncStorage.setItem(KEY_ELDER_PAIR_CODE, JSON.stringify(record));
     return record;
   } catch (e) {
-    // 後端失�??�退?�本?�產??    const code = await generatePairCode();
+    const code = await generatePairCode();
     const record: ElderPairCodeRecord = {code, createdAt: Date.now()};
     await AsyncStorage.setItem(KEY_ELDER_PAIR_CODE, JSON.stringify(record));
     return record;
@@ -113,7 +110,7 @@ export function generateFamilyId(): string {
   });
 }
 
-// ?�?�?� App role ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+// ─── App role ─────────────────────────────────────────────────────────────────
 
 export async function getAppRole(): Promise<AppRole | null> {
   try {
@@ -128,7 +125,7 @@ export async function setAppRole(role: AppRole): Promise<void> {
   await AsyncStorage.setItem(KEY_ROLE, role);
 }
 
-// ?�?�?� Elder profile ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+// ─── Elder profile ────────────────────────────────────────────────────────────
 
 export async function getElderProfile(): Promise<ElderProfile | null> {
   try {
@@ -144,12 +141,12 @@ export async function setElderProfile(profile: ElderProfile): Promise<void> {
   await AsyncStorage.setItem(KEY_ELDER_PROFILE, JSON.stringify(profile));
 }
 
-// ?�?�?� Family profile ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+// ─── Family profile ───────────────────────────────────────────────────────────
 
 export async function getFamilyProfile(): Promise<FamilyProfile | null> {
   try {
     const raw = await AsyncStorage.getItem(KEY_FAMILY_PROFILE);
-    if (!raw) return null;
+    if (!raw) {return null;}
     const profile = JSON.parse(raw) as FamilyProfile;
     if (!profile.familyId) {
       profile.familyId = generateFamilyId();
@@ -168,7 +165,7 @@ export async function setFamilyProfile(profile: FamilyProfile): Promise<void> {
   await AsyncStorage.setItem(KEY_FAMILY_PROFILE, JSON.stringify(withId));
 }
 
-// ?�?�?� Paired elders (family side) ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+// ─── Paired elders (family side) ─────────────────────────────────────────────
 
 export async function getPairedElders(): Promise<PairedElder[]> {
   try {
@@ -199,10 +196,16 @@ export async function updateElderPairCode(oldCode: string, newCode: string): Pro
   if (profile?.pairCode === oldCode) {
     await setElderProfile({...profile, pairCode: newCode});
   }
-  // Reset expiry: the new code gets a fresh 48-hour window
   const record: ElderPairCodeRecord = {code: newCode, createdAt: Date.now()};
   await AsyncStorage.setItem(KEY_ELDER_PAIR_CODE, JSON.stringify(record));
   const list = await getPairedElders();
+  const updated = list.map(e => e.pairCode === oldCode ? {...e, pairCode: newCode} : e);
+  await AsyncStorage.setItem(KEY_PAIRED_ELDERS, JSON.stringify(updated));
+  return updated;
+}
+
+// ─── Try pair with code ───────────────────────────────────────────────────────
+
 /**
  * Same-device pairing: calls backend to confirm pairing code.
  * Falls back to local check if backend is unavailable.
@@ -215,7 +218,7 @@ export async function tryPairWithCode(code: string): Promise<TryPairResult> {
     const result = await confirmPairing(code.trim(), deviceId);
     if (result?.success) {
       await AsyncStorage.setItem('isPaired', 'true');
-      return {status: 'ok', profile: await getElderProfile()};
+      return {status: 'ok', profile: await getElderProfile() ?? undefined};
     }
     if (result?.message?.includes('過期')) { return {status: 'expired'}; }
     return {status: 'invalid'};
@@ -228,17 +231,16 @@ export async function tryPairWithCode(code: string): Promise<TryPairResult> {
   }
 }
 
-
-// ?�?�?� Elder display name (for notifications) ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+// ─── Elder display name (for notifications) ───────────────────────────────────
 
 export async function getElderDisplayName(): Promise<string> {
-  if (_cachedElderName !== null) return _cachedElderName;
+  if (_cachedElderName !== null) {return _cachedElderName;}
   const profile = await getElderProfile();
-  _cachedElderName = profile?.name ?? '?�輩';
+  _cachedElderName = profile?.name ?? '長輩';
   return _cachedElderName;
 }
 
-// ?�?�?� Family members (shown on elder side) ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+// ─── Family members (shown on elder side) ────────────────────────────────────
 
 export async function getFamilyMembers(): Promise<FamilyMember[]> {
   try {
@@ -266,7 +268,7 @@ export async function removeFamilyMember(familyId: string): Promise<FamilyMember
   return updated;
 }
 
-// ?�?�?� Family count (shown on elder side) ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+// ─── Family count (shown on elder side) ──────────────────────────────────────
 
 export async function getElderFamilyCount(): Promise<number> {
   const members = await getFamilyMembers();
@@ -277,19 +279,18 @@ export async function getElderFamilyCount(): Promise<number> {
   return uniqueIds.size + legacyCount;
 }
 
-// No-op: count is now derived from getFamilyMembers() to avoid drift
 export async function incrementElderFamilyCount(): Promise<number> {
   return getElderFamilyCount();
 }
 
-// ?�?�?� Family role ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+// ─── Family role ──────────────────────────────────────────────────────────────
 
 export async function getFamilyRole(): Promise<FamilyRole> {
   const profile = await getFamilyProfile();
   return profile?.role ?? 'admin';
 }
 
-// ?�?�?� Invite code ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+// ─── Invite code ──────────────────────────────────────────────────────────────
 
 export async function generateAndSaveInviteCode(): Promise<InviteCode> {
   const code = String(Math.floor(10000000 + Math.random() * 90000000));
@@ -307,7 +308,6 @@ export async function getInviteCode(): Promise<InviteCode | null> {
   }
 }
 
-// Returns true only if code matches and was created within 24 hours
 export async function verifyInviteCode(code: string): Promise<boolean> {
   const invite = await getInviteCode();
   if (!invite || invite.code !== code.trim()) {return false;}
@@ -315,7 +315,6 @@ export async function verifyInviteCode(code: string): Promise<boolean> {
   return ageHours <= 24;
 }
 
-// Distinguishes expired from invalid for better user-facing error messages
 export async function verifyInviteCodeStatus(code: string): Promise<VerifyInviteStatus> {
   const invite = await getInviteCode();
   if (!invite || invite.code !== code.trim()) {return 'invalid';}
@@ -323,10 +322,9 @@ export async function verifyInviteCodeStatus(code: string): Promise<VerifyInvite
   return ageHours <= 24 ? 'ok' : 'expired';
 }
 
-// ?�?�?� Full reset ?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�?�
+// ─── Full reset ───────────────────────────────────────────────────────────────
 
 export async function clearAllAppData(): Promise<void> {
   _cachedElderName = null;
   await AsyncStorage.clear();
 }
-
