@@ -1,7 +1,6 @@
 import React, {useState, useRef, useEffect} from 'react';
 import {
   View,
-  TouchableOpacity,
   Text,
   StyleSheet,
   StatusBar,
@@ -63,7 +62,6 @@ export default function AppNavigator() {
   const [appRole, setAppRoleState] = useState<AppRole | 'onboarding' | null>(null);
   const [showPermGuide, setShowPermGuide] = useState(false);
   const [pendingRole, setPendingRole] = useState<AppRole | null>(null);
-  const [testViewMode, setTestViewMode] = useState<AppRole>('elder');
 
   useEffect(() => {
     async function init() {
@@ -74,33 +72,19 @@ export default function AppNavigator() {
       if (role === null) {
         setAppRoleState('onboarding');
       } else if (!guideShown) {
-        setTestViewMode(role);
         setPendingRole(role);
         setShowPermGuide(true);
       } else {
         setAppRoleState(role);
-        setTestViewMode(role);
       }
     }
     init();
   }, []);
 
-  const handleTestSwitch = () => {
-    const next: AppRole = testViewMode === 'elder' ? 'family' : 'elder';
-    setTestViewMode(next);
-    if (navReady.current && navRef.current) {
-      navRef.current.reset({
-        index: 0,
-        routes: [{name: next === 'elder' ? 'ElderHome' : 'FamilyDashboard'}],
-      });
-    }
-  };
-
   const handleOnboardingComplete = async () => {
     const role = await getAppRole();
     if (!role) {return;}
     const guideShown = await AsyncStorage.getItem(PERMISSION_GUIDE_KEY);
-    setTestViewMode(role);
     if (!guideShown) {
       setPendingRole(role);
       setShowPermGuide(true);
@@ -179,12 +163,6 @@ export default function AppNavigator() {
                   <Text style={s.brandSub}>MAMORI · まもり</Text>
                 </View>
               </View>
-              <TouchableOpacity
-                style={s.testSwitchBtn}
-                onPress={handleTestSwitch}
-                hitSlop={{top: 8, bottom: 8, left: 8, right: 8}}>
-                <Text style={s.testSwitchText}>切換端</Text>
-              </TouchableOpacity>
             </LinearGradient>
           </SafeAreaView>
 
@@ -243,13 +221,4 @@ const s = StyleSheet.create({
   brandText: {flexDirection: 'column'},
   brandName: {color: C.ink, fontSize: 20, fontWeight: '700', letterSpacing: 3, lineHeight: 24},
   brandSub: {color: C.sub, fontSize: 9, letterSpacing: 0.5, lineHeight: 13},
-  testSwitchBtn: {
-    paddingHorizontal: 6,
-    paddingVertical: 4,
-    minHeight: 28,
-    minWidth: 36,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  testSwitchText: {fontSize: 10, color: '#AAAAAA', fontWeight: '400'},
 });
