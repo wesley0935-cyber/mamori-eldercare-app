@@ -976,14 +976,16 @@ export default function ElderHomeScreen() {
     fetchTodayNews().then(setNews).finally(() => setNewsLoading(false));
   }, []);
 
-  useEffect(() => {
-    getMedications().then(loadedMeds => {
+ useEffect(() => {
+  getElderProfile().then(p => {
+    const elderId = p?.pairCode ?? 'default';
+    getMedications(elderId).then(loadedMeds => {
       setMeds(loadedMeds);
-      return getEffectiveTakenState(loadedMeds);
+      return getEffectiveTakenState(loadedMeds, elderId);
     }).then(setTakenState);
-    return startMedicationReminder();
-  }, []);
-
+  });
+  return startMedicationReminder();
+}, []);
   useEffect(() => {
     return startFallDetection(() => {
       fallLocRef.current = startCurrentLocation(10_000);
