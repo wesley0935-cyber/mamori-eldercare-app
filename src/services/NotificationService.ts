@@ -46,9 +46,19 @@ export async function initFCM(): Promise<void> {
 
   await createChannels();
 
-  const mock = `mock-fcm-${Date.now()}`;
-  await AsyncStorage.setItem(FCM_TOKEN_KEY, mock);
-  console.log('[FCM] Mock token stored:', mock);
+  try {
+    const { registerFcmToken } = require('../api/notificationApi');
+    const messaging = require('@react-native-firebase/messaging').default;
+    const token = await messaging().getToken();
+    await AsyncStorage.setItem(FCM_TOKEN_KEY, token);
+    const deviceId = await AsyncStorage.getItem('deviceId') ?? 'unknown';
+    await registerFcmToken(deviceId, token);
+    console.log('[FCM] Token registered:', token);
+  } catch (e) {
+    const mock = `mock-fcm-${Date.now()}`;
+    await AsyncStorage.setItem(FCM_TOKEN_KEY, mock);
+    console.log('[FCM] Mock token stored (fallback):', mock);
+  }
 }
 
 // ─── Foreground handler ───────────────────────────────────────────────────────
