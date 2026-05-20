@@ -85,10 +85,23 @@ export async function getElderPairCodeRecord(): Promise<ElderPairCodeRecord | nu
   }
 }
 
-export async function generateAndSavePairCode(): Promise<ElderPairCodeRecord> {
+// ── 修改1：加入 params 參數，傳 elderName/elderAge/deviceId 給後端 ──
+export async function generateAndSavePairCode(params?: {
+  elderName?: string;
+  elderAge?: number;
+}): Promise<ElderPairCodeRecord> {
   try {
     const { generatePairingCode } = require('../api/pairingApi');
-    const result = await generatePairingCode();
+    let deviceId = await AsyncStorage.getItem('deviceId');
+    if (!deviceId) {
+      deviceId = await DeviceInfo.getUniqueId();
+      await AsyncStorage.setItem('deviceId', deviceId);
+    }
+    const result = await generatePairingCode({
+      elderName: params?.elderName || '',
+      elderAge: params?.elderAge || 0,
+      deviceId,
+    });
     const record: ElderPairCodeRecord = {
       code: result.code,
       createdAt: Date.now(),
@@ -204,23 +217,32 @@ export async function updateElderPairCode(oldCode: string, newCode: string): Pro
   return updated;
 }
 
-// ─── Try pair with code ───────────────────────────────────────────────────────
+// ─── Try pair with code (elder side) ─────────────────────────────────────────
 
-/**
- * Same-device pairing: calls backend to confirm pairing code.
- * Falls back to local check if backend is unavailable.
- */
 export async function tryPairWithCode(code: string): Promise<TryPairResult> {
   try {
     const { confirmPairing } = require('../api/pairingApi');
-    const deviceId = await AsyncStorage.getItem('deviceId');
-    if (!deviceId) { return {status: 'invalid'}; }
-    const result = await confirmPairing(code.trim(), deviceId);
-    if (result?.success) {
-      await AsyncStorage.setItem('isPaired', 'true');
-      return {status: 'ok', profile: await getElderProfile() ?? undefined};
+    let deviceId = await AsyncStorage.getItem('deviceId');
+    if (!deviceId) {
+      deviceId = await DeviceInfo.getUniqueId();
+      await AsyncStorage.setItem('deviceId', deviceId);
     }
-    if (result?.message?.includes('過期')) { return {status: 'expired'}; }
+    const result = await confirmPairing(code.trim(), deviceId);
+
+    if (result?.success) {
+      const profile: ElderProfile = {
+        name: result.elderName || '長輩',
+        age: result.elderAge || 0,
+        pairCode: code.trim(),
+      };
+      await setElderProfile(profile);
+      await AsyncStorage.setItem('isPaired', 'true');
+      return {status: 'ok', profile};
+    }
+
+    if (result?.message?.includes('過期') || result?.error?.includes('過期')) {
+      return {status: 'expired'};
+    }
     return {status: 'invalid'};
   } catch (e) {
     const profile = await getElderProfile();
@@ -228,6 +250,32 @@ export async function tryPairWithCode(code: string): Promise<TryPairResult> {
     const record = await getElderPairCodeRecord();
     if (record && Date.now() - record.createdAt > PAIR_CODE_EXPIRY_MS) { return {status: 'expired'}; }
     return {status: 'ok', profile};
+  }
+}
+
+// ── 修改2：新增 confirmPairingWithCode（家屬端用）────────────────────────────
+
+export async function confirmPairingWithCode(code: string): Promise<TryPairResult> {
+  try {
+    const { confirmPairing } = require('../api/pairingApi');
+    const result = await confirmPairing(code.trim());
+
+    if (result?.success) {
+      return {
+        status: 'ok',
+        profile: {
+          name: result.elderName || '長輩',
+          age: result.elderAge || 0,
+          pairCode: code.trim(),
+        },
+      };
+    }
+    if (result?.message?.includes('過期') || result?.error?.includes('過期')) {
+      return {status: 'expired'};
+    }
+    return {status: 'invalid'};
+  } catch (e) {
+    return {status: 'invalid'};
   }
 }
 
