@@ -1,4 +1,4 @@
-import React, {useState, useEffect, useRef} from 'react';
+import React, {useState, useEffect, useRef, useCallback} from 'react';
 import {
   View,
   Text,
@@ -14,7 +14,8 @@ import {
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import {useBatteryLevel} from 'react-native-device-info';
-import {startStepListener} from '../../services/HealthService';
+import {startStepListener, readLastNightSleep, readTodayStepsOnce} from '../../services/HealthService';
+import {uploadStepData} from '../../api/stepsApi';
 import {startBatteryMonitor} from '../../services/BatteryService';
 import {
   startScreenUnlockService,
@@ -70,8 +71,10 @@ import {
 } from '../../services/EmergencyContactService';
 import {
   startCurrentLocation,
+  requestLocationPermission,
   type CancellableLocation,
 } from '../../services/LocationService';
+import {useFocusEffect} from '@react-navigation/native';
 import {
   getElderProfile,
   getElderFamilyCount,
@@ -721,14 +724,15 @@ function StatusItem({
 }
 
 function TodayStatusGrid({
-  steps, isMock, lastUnlock, stepGoal, fallEnabled,
+  steps, lastUnlock, stepGoal, fallEnabled, sleepHours,
 }: {
-  steps: number | null; isMock: boolean; lastUnlock: string;
-  stepGoal: number; fallEnabled: boolean;
+  steps: number | null; lastUnlock: string;
+  stepGoal: number; fallEnabled: boolean; sleepHours: number | null;
 }) {
   const stepsDisplay = steps === null ? '讀取中' : steps.toLocaleString('zh-TW');
   const stepsColor =
     steps === null ? C.sub : steps < stepGoal ? C.warning : C.matcha;
+  const sleepDisplay = sleepHours !== null ? String(sleepHours) : '--';
 
   return (
     <View style={[s.card, steps !== null && steps < stepGoal ? s.cardWarning : null]}>
@@ -743,7 +747,11 @@ function TodayStatusGrid({
           color={stepsColor}
         />
         <StatusItem icon="📱" label="上次解鎖" value={lastUnlock} color={C.primary} />
-        <StatusItem icon="🌙" label="昨夜睡眠" value="7.5" unit="小時" color={C.primary} />
+        <StatusItem
+          icon="🌙" label="昨夜睡眠"
+          value={sleepDisplay} unit={sleepHours !== null ? '小時' : undefined}
+          color={C.primary}
+        />
         <StatusItem
           icon="🛡"
           label="跌倒偵測"
@@ -751,7 +759,6 @@ function TodayStatusGrid({
           color={fallEnabled ? C.matcha : C.sub}
         />
       </View>
-      {isMock && <Text style={s.mockBadge}>模擬數據</Text>}
     </View>
   );
 }
@@ -912,6 +919,7 @@ export default function ElderHomeScreen() {
 
   const [steps, setSteps]           = useState<number | null>(null);
   const [isMock, setIsMock]         = useState(false);
+  const [sleepHours, setSleepHours] = useState<number | null>(null);
   const [lastUnlock, setLastUnlock] = useState('--:--');
   const [profile, setProfile]       = useState<ElderProfile | null>(null);
   const [familyCount, setFamilyCount]     = useState(0);
@@ -952,6 +960,25 @@ export default function ElderHomeScreen() {
     return () => stop?.();
   }, []);
 
+  // 進入畫面時讀取昨夜睡眠（Health Connect 或回傳 0）
+  useEffect(() => {
+    readLastNightSleep().then(setSleepHours);
+  }, []);
+
+  // 步數與睡眠都就緒，且為真實數據（非 mock）時才上傳後端
+  // sleepHours=null 表示 Health Connect 不可用，不上傳
+  // isMock=true 表示步數為模擬值，不上傳
+  useEffect(() => {
+    if (steps === null || sleepHours === null || isMock) { return; }
+    AsyncStorage.getItem('deviceId').then(deviceId => {
+      if (!deviceId) { return; }
+      const today = new Date().toISOString().slice(0, 10);
+      uploadStepData(deviceId, today, steps, sleepHours).catch(e =>
+        console.warn('[ElderHome] uploadStepData failed:', e),
+      );
+    });
+  }, [steps, sleepHours, isMock]);
+
   useEffect(() => {
     getLastUnlockTime().then(setLastUnlock);
     const stopUnlock = startScreenUnlockService(ev => {
@@ -976,16 +1003,23 @@ export default function ElderHomeScreen() {
     fetchTodayNews().then(setNews).finally(() => setNewsLoading(false));
   }, []);
 
- useEffect(() => {
-  getElderProfile().then(p => {
-    const elderId = p?.pairCode ?? 'default';
-    getMedications(elderId).then(loadedMeds => {
-      setMeds(loadedMeds);
-      return getEffectiveTakenState(loadedMeds, elderId);
-    }).then(setTakenState);
-  });
-  return startMedicationReminder();
-}, []);
+  // 服藥提醒 service 只啟動一次
+  useEffect(() => {
+    return startMedicationReminder();
+  }, []);
+
+  // 每次畫面 focus 時重新從後端拉取最新服藥資料
+  useFocusEffect(
+    useCallback(() => {
+      getElderProfile().then(p => {
+        const elderId = p?.pairCode ?? 'default';
+        getMedications(elderId).then(loadedMeds => {
+          setMeds(loadedMeds);
+          return getEffectiveTakenState(loadedMeds, elderId);
+        }).then(setTakenState);
+      });
+    }, []),
+  );
   useEffect(() => {
     return startFallDetection(() => {
       fallLocRef.current = startCurrentLocation(10_000);
@@ -1045,8 +1079,9 @@ export default function ElderHomeScreen() {
     if (time !== null) setSharedAt(time);
   };
 
-  const handleSOSTrigger = () => {
-    locRef.current = startCurrentLocation(10_000);
+  const handleSOSTrigger = async () => {
+    await requestLocationPermission();
+    locRef.current = startCurrentLocation(15_000);
     setSosModalVisible(true);
   };
 
@@ -1181,7 +1216,7 @@ export default function ElderHomeScreen() {
         />
         <BatteryCard />
         <TodayStatusGrid
-          steps={steps} isMock={isMock}
+          steps={steps} sleepHours={sleepHours}
           lastUnlock={lastUnlock} stepGoal={stepGoal}
           fallEnabled={fallEnabled}
         />
