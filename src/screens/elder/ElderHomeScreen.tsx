@@ -1020,6 +1020,20 @@ export default function ElderHomeScreen() {
       });
     }, []),
   );
+
+  // 每次進入畫面立即重新讀取步數（Health Connect 可用時），不依賴 60 秒輪詢
+  useFocusEffect(
+    useCallback(() => {
+      readTodayStepsOnce().then(s => {
+        if (s !== null) {
+          setSteps(s);
+          setIsMock(false);
+          notifyStepsUpdated(s);
+        }
+      });
+    }, []),
+  );
+
   useEffect(() => {
     return startFallDetection(() => {
       fallLocRef.current = startCurrentLocation(10_000);
@@ -1125,20 +1139,27 @@ export default function ElderHomeScreen() {
     const now = new Date();
     const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
+    // 第一則推播：立即通知家屬
     await sendSOSImmediate(elderName, time);
     setSosStatus('locating');
 
-    if (primary) {
-      Linking.openURL(`tel:${primary.phone}`).catch(console.error);
-    }
-
-    const loc = await (locRef.current?.promise ?? startCurrentLocation(10_000).promise);
+    // 等待 GPS，上限 8 秒（GPS 從長按 SOS 時已開始，通常剩餘等待時間短）
+    const locHandle = locRef.current ?? startCurrentLocation(10_000);
     locRef.current = null;
+    const gpsTimeout = new Promise<null>(resolve => setTimeout(() => resolve(null), 8_000));
+    const loc = await Promise.race([locHandle.promise, gpsTimeout]);
+    locHandle.cancel();
 
+    // 第二則推播：含 GPS 連結或無法取得位置
     if (loc) {
       await sendSOSWithLocation(elderName, loc.latitude, loc.longitude, loc.accuracy);
     } else {
       await sendSOSNoLocation(elderName);
+    }
+
+    // 確認兩則推播都已發送後再撥話，避免切換 app 中斷第二則推播
+    if (primary) {
+      Linking.openURL(`tel:${primary.phone}`).catch(console.error);
     }
 
     // 發送完成後啟動冷卻，避免短時間重複發送

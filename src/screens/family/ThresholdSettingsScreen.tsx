@@ -15,7 +15,7 @@ import {
   type ThresholdSettings,
   type FallDetectionSensitivity,
 } from '../../services/ThresholdSettingsService';
-import {getFamilyRole, type FamilyRole} from '../../services/ProfileService';
+import {getFamilyRole, getAppRole, type FamilyRole, type AppRole} from '../../services/ProfileService';
 
 const COLORS = {
   background: '#F0F3FA',
@@ -150,11 +150,13 @@ export default function ThresholdSettingsScreen() {
   const [settings, setSettings] = useState<ThresholdSettings>(THRESHOLD_DEFAULTS);
   const [dirty, setDirty] = useState(false);
   const [familyRole, setFamilyRole] = useState<FamilyRole>('admin');
+  const [appRole, setAppRole] = useState<AppRole | null>(null);
 
   const load = useCallback(async () => {
-    const [s, role] = await Promise.all([getThresholdSettings(), getFamilyRole()]);
+    const [s, role, ar] = await Promise.all([getThresholdSettings(), getFamilyRole(), getAppRole()]);
     setSettings(s);
     setFamilyRole(role);
+    setAppRole(ar);
     setDirty(false);
   }, []);
 
@@ -225,20 +227,23 @@ export default function ThresholdSettingsScreen() {
             />
           </SettingRow>
 
-          <View style={styles.divider} />
-
-          {/* 2. 每日步數目標 */}
-          <SettingRow
-            emoji="👟"
-            label="每日步數目標"
-            desc="低於此步數將顯示橘色警示">
-            <SegmentSelector
-              options={STEP_OPTIONS}
-              labels={STEP_LABELS}
-              value={settings.stepGoal}
-              onChange={v => update('stepGoal', v)}
-            />
-          </SettingRow>
+          {appRole !== 'family' && (
+            <>
+              <View style={styles.divider} />
+              {/* 2. 每日步數目標 — 長輩端設定，家屬端隱藏 */}
+              <SettingRow
+                emoji="👟"
+                label="每日步數目標"
+                desc="低於此步數將顯示橘色警示">
+                <SegmentSelector
+                  options={STEP_OPTIONS}
+                  labels={STEP_LABELS}
+                  value={settings.stepGoal}
+                  onChange={v => update('stepGoal', v)}
+                />
+              </SettingRow>
+            </>
+          )}
 
           <View style={styles.divider} />
 
@@ -294,20 +299,23 @@ export default function ThresholdSettingsScreen() {
             </View>
           </SettingRow>
 
-          <View style={styles.divider} />
-
-          {/* 6. 跌倒偵測靈敏度 */}
-          <SettingRow
-            emoji="🛡"
-            label="跌倒偵測靈敏度"
-            desc="靈敏度越高偵測越敏感，但誤報率也越高。建議從「低」開始調整">
-            <SegmentSelector<FallDetectionSensitivity>
-              options={FALL_OPTIONS}
-              labels={FALL_LABELS}
-              value={settings.fallDetectionSensitivity}
-              onChange={v => update('fallDetectionSensitivity', v)}
-            />
-          </SettingRow>
+          {appRole !== 'family' && (
+            <>
+              <View style={styles.divider} />
+              {/* 6. 跌倒偵測靈敏度 — 長輩端設定，家屬端隱藏 */}
+              <SettingRow
+                emoji="🛡"
+                label="跌倒偵測靈敏度"
+                desc="靈敏度越高偵測越敏感，但誤報率也越高。建議從「低」開始調整">
+                <SegmentSelector<FallDetectionSensitivity>
+                  options={FALL_OPTIONS}
+                  labels={FALL_LABELS}
+                  value={settings.fallDetectionSensitivity}
+                  onChange={v => update('fallDetectionSensitivity', v)}
+                />
+              </SettingRow>
+            </>
+          )}
         </View>
 
         {dirty && familyRole !== 'viewer' && (
