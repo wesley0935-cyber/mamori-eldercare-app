@@ -12,8 +12,9 @@ import {
   Platform,
   Clipboard,
   Share,
+  Linking,
 } from 'react-native';
-import {useNavigation} from '@react-navigation/native';
+import {useNavigation, useFocusEffect} from '@react-navigation/native';
 import type {StackNavigationProp} from '@react-navigation/stack';
 import notifee, {AuthorizationStatus} from '@notifee/react-native';
 import QRCode from 'react-native-qrcode-svg';
@@ -33,13 +34,20 @@ import {
   generatePairCode,
   generateAndSavePairCode,
   setElderProfile,
+  confirmPairingWithCode,
   type PairedElder,
   type FamilyMember,
   type FamilyRole,
   type InviteCode,
   type ElderProfile,
 } from '../../services/ProfileService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import StepTrendChart from '../../components/StepTrendChart';
+import {
+  loadAlerts,
+  markAlertResolved,
+  type AlertRecord,
+} from '../../services/AlertStorageService';
 
 type Nav = StackNavigationProp<RootStackParamList, 'FamilyDashboard'>;
 
@@ -59,16 +67,7 @@ const C = {
 
 function sc(n: number) { return Math.round(n * 1.2); }
 
-// ─── Data types ────────────────────────────────────────────────────────────────
-interface AlertRecord {
-  id: string;
-  elderName: string;
-  type: 'sos' | 'noCheckIn' | 'lowBattery' | 'fall' | 'medication';
-  message: string;
-  time: string;
-  resolved: boolean;
-}
-const ALERTS: AlertRecord[] = [];
+// AlertRecord 型別來自 AlertStorageService，此處無需重複宣告
 
 // ─── Add Elder Modal ───────────────────────────────────────────────────────────
 interface AddElderModalProps {
@@ -138,11 +137,18 @@ function AddElderModal({visible, onClose, onAdded}: AddElderModalProps) {
     setLoading(true);
     try {
       const now = new Date().toISOString();
+      const pairedResult = await confirmPairingWithCode(pairCode);
+      let elderId = pairedResult.profile?.elderId ?? undefined;
+      if (!elderId) {
+        const fallback = await AsyncStorage.getItem('backendElderId');
+        elderId = fallback ?? undefined;
+      }
       const newElder: PairedElder = {
         pairCode,
         name: elderName.trim(),
         age: parseInt(elderAge, 10),
         pairedAt: now,
+        elderId: elderId ?? undefined,
       };
       await addPairedElder(newElder);
       const fp = await getFamilyProfile();
@@ -154,6 +160,25 @@ function AddElderModal({visible, onClose, onAdded}: AddElderModalProps) {
           role: fp.role,
         });
       }
+
+      // 登記家屬裝置 FCM token，確保後續推播能收到
+      try {
+        const pairingId = await AsyncStorage.getItem('backendPairingId');
+        if (pairingId) {
+          const messaging = require('@react-native-firebase/messaging').default;
+          const { registerFamilyFcmToken } = require('../../api/notificationApi');
+          const fcmToken = await messaging().getToken();
+          if (fcmToken) {
+            await registerFamilyFcmToken(pairingId, fcmToken);
+            console.log('[FamilyDashboard] 家屬 FCM token 已登記 pairingId:', pairingId);
+          }
+        } else {
+          console.warn('[FamilyDashboard] 無 backendPairingId，FCM token 未登記');
+        }
+      } catch (fcmErr) {
+        console.warn('[FamilyDashboard] FCM token 登記失敗（不影響配對）:', fcmErr);
+      }
+
       reset();
       onAdded(newElder);
     } finally {
@@ -635,8 +660,9 @@ function FamilyMemberCard({member, onRemove}: {member: FamilyMember; onRemove?: 
   );
 }
 
-function ElderCard({elder, onPress, onLongPress, isAdmin}: {elder: PairedElder; onPress: () => void; onLongPress: () => void; isAdmin: boolean}) {
+function ElderCard({elder, alerts, onPress, onLongPress, isAdmin}: {elder: PairedElder; alerts: AlertRecord[]; onPress: () => void; onLongPress: () => void; isAdmin: boolean}) {
   const pairedDate = new Date(elder.pairedAt).toLocaleDateString('zh-TW');
+  const statusCfg = STATUS_CONFIG[getElderStatus(elder, alerts)];
   return (
     <View style={styles.elderCard}>
       <TouchableOpacity
@@ -651,49 +677,191 @@ function ElderCard({elder, onPress, onLongPress, isAdmin}: {elder: PairedElder; 
             <Text style={styles.elderName}>{elder.name}</Text>
             <Text style={styles.elderAge}>{elder.age} 歲</Text>
           </View>
-          <View style={styles.pairedBadge}>
-            <Text style={styles.pairedBadgeText}>已配對</Text>
+          <View style={styles.elderBadgeCol}>
+            <View style={[styles.elderStatusBadge, {backgroundColor: statusCfg.bg}]}>
+              <Text style={[styles.elderStatusBadgeText, {color: statusCfg.color}]}>
+                {statusCfg.label}
+              </Text>
+            </View>
+            <View style={styles.pairedBadge}>
+              <Text style={styles.pairedBadgeText}>已配對</Text>
+            </View>
           </View>
         </View>
         <Text style={styles.pairedSince}>配對碼 {elder.pairCode}・加入於 {pairedDate}</Text>
         {isAdmin && <Text style={styles.longPressHint}>點擊查看詳情・長按可移除</Text>}
       </TouchableOpacity>
-      <StepTrendChart pairCode={elder.pairCode} />
+      <StepTrendChart pairCode={elder.pairCode} elderId={elder.elderId} />
     </View>
   );
 }
 
+// ─── Alert Message Body（支援 Google Maps 連結點擊）─────────────────────────────
+const MAPS_URL_RE = /(https:\/\/maps\.google\.com\/\?q=[\d.,\-]+)/g;
+
+function AlertMessageBody({message}: {message: string}) {
+  if (!message) {
+    return <Text style={detailModalSt.logBody}>（無詳細內容）</Text>;
+  }
+  const parts = message.split(MAPS_URL_RE);
+  if (parts.length === 1) {
+    return <Text style={detailModalSt.logBody}>{message}</Text>;
+  }
+  return (
+    <Text style={detailModalSt.logBody}>
+      {parts.map((part, i) =>
+        MAPS_URL_RE.test(part) ? (
+          <Text
+            key={i}
+            style={detailModalSt.logLink}
+            onPress={() => Linking.openURL(part).catch(() => {})}>
+            📍 點此開啟地圖
+          </Text>
+        ) : (
+          <Text key={i}>{part}</Text>
+        ),
+      )}
+    </Text>
+  );
+}
+
+// ─── Alert Detail Modal ────────────────────────────────────────────────────────
+function AlertDetailModal({
+  alert,
+  onClose,
+  onResolve,
+}: {
+  alert: AlertRecord | null;
+  onClose: () => void;
+  onResolve: (id: string) => void;
+}) {
+  if (!alert) { return null; }
+  const icons: Record<AlertRecord['type'], string> = {
+    sos: '🆘', noCheckIn: '📋', lowBattery: '🔋', fall: '⚠️', medication: '💊', activity: '📋',
+  };
+  const borderColor =
+    alert.type === 'sos' ? C.sos
+    : alert.type === 'fall' ? C.warning
+    : C.primary;
+
+  return (
+    <Modal visible={!!alert} transparent animationType="slide" onRequestClose={onClose}>
+      <View style={detailModalSt.overlay}>
+        <View style={[detailModalSt.sheet, {borderTopColor: borderColor}]}>
+          {/* 頭部 */}
+          <View style={detailModalSt.header}>
+            <Text style={detailModalSt.icon}>{icons[alert.type]}</Text>
+            <View style={detailModalSt.headerText}>
+              <Text style={detailModalSt.title} numberOfLines={2}>{alert.title}</Text>
+              <Text style={detailModalSt.time}>{alert.time}</Text>
+            </View>
+            <TouchableOpacity onPress={onClose} style={detailModalSt.closeBtn}>
+              <Text style={detailModalSt.closeBtnText}>✕</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* 詳細日誌 */}
+          <ScrollView style={detailModalSt.logScroll} contentContainerStyle={detailModalSt.logContent}>
+            <Text style={detailModalSt.logLabel}>詳細日誌</Text>
+            <AlertMessageBody message={alert.message} />
+          </ScrollView>
+
+          {/* 處理按鈕 */}
+          {!alert.resolved ? (
+            <TouchableOpacity
+              style={detailModalSt.resolveBtn}
+              onPress={() => onResolve(alert.id)}>
+              <Text style={detailModalSt.resolveBtnText}>✓ 標記為已處理</Text>
+            </TouchableOpacity>
+          ) : (
+            <View style={detailModalSt.resolvedNote}>
+              <Text style={detailModalSt.resolvedNoteText}>✓ 已處理</Text>
+            </View>
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+// ─── 長輩狀態計算 ──────────────────────────────────────────────────────────────
+type ElderStatus = 'normal' | 'attention' | 'critical';
+
+const CRITICAL_TYPES: AlertRecord['type'][]  = ['sos', 'fall', 'noCheckIn'];
+const ATTENTION_TYPES: AlertRecord['type'][] = ['lowBattery', 'medication'];
+
+/**
+ * 依未處理警示計算單一長輩的狀態。
+ * 比對優先序：elderId（精準）→ elderName（備援）。
+ * 兩者皆無的舊記錄（elderName 為空字串）會被排除，避免誤判。
+ */
+function getElderStatus(elder: PairedElder, alerts: AlertRecord[]): ElderStatus {
+  const unresolved = alerts.filter(a => {
+    if (a.resolved) { return false; }
+    // 優先用 elderId 精準比對
+    if (elder.elderId && a.elderId) { return a.elderId === elder.elderId; }
+    // 退而用 elderName 比對
+    if (a.elderName) { return a.elderName === elder.name; }
+    return false;
+  });
+  if (unresolved.some(a => CRITICAL_TYPES.includes(a.type)))  { return 'critical'; }
+  if (unresolved.some(a => ATTENTION_TYPES.includes(a.type))) { return 'attention'; }
+  return 'normal';
+}
+
+const STATUS_CONFIG: Record<ElderStatus, {label: string; color: string; bg: string}> = {
+  normal:    {label: '狀態正常', color: C.safe,    bg: '#E8F7EF'},
+  attention: {label: '需要注意', color: C.warning, bg: '#FEF3C7'},
+  critical:  {label: '狀態異常', color: C.sos,     bg: '#FDECEA'},
+};
+
 function AlertIcon({type}: {type: AlertRecord['type']}) {
   const icons: Record<AlertRecord['type'], string> = {
-    sos: '🆘', noCheckIn: '📋', lowBattery: '🔋', fall: '⚠️', medication: '💊',
+    sos: '🆘', noCheckIn: '📋', lowBattery: '🔋', fall: '⚠️', medication: '💊', activity: '📋',
   };
   return <Text style={styles.alertIcon}>{icons[type]}</Text>;
 }
 
-function AlertItem({record}: {record: AlertRecord}) {
+function AlertItem({record, onPress}: {record: AlertRecord; onPress: () => void}) {
   const borderColor = record.resolved ? C.border
     : record.type === 'sos' ? C.sos : C.warning;
   return (
-    <View style={[styles.alertItem, {borderLeftColor: borderColor}]}>
+    <TouchableOpacity
+      onPress={onPress}
+      activeOpacity={0.8}
+      style={[styles.alertItem, {borderLeftColor: borderColor}]}>
       <AlertIcon type={record.type} />
       <View style={styles.alertContent}>
-        <Text style={styles.alertName}>{record.elderName}</Text>
-        <Text style={styles.alertMessage}>{record.message}</Text>
+        <View style={styles.alertTitleRow}>
+          <Text style={[styles.alertName, styles.alertNameShrink]} numberOfLines={1}>
+            {record.title || '通知'}
+          </Text>
+          {!!record.elderName && (
+            <View style={styles.alertElderTag}>
+              <Text style={styles.alertElderTagText} numberOfLines={1}>
+                {record.elderName}
+              </Text>
+            </View>
+          )}
+        </View>
+        <Text style={styles.alertMessage} numberOfLines={2}>{record.message}</Text>
         <Text style={styles.alertTime}>{record.time}</Text>
       </View>
       {record.resolved ? (
         <View style={styles.resolvedBadge}><Text style={styles.resolvedText}>已處理</Text></View>
       ) : (
-        <View style={styles.unresolvedBadge}><Text style={styles.unresolvedText}>待處理</Text></View>
+        <View style={styles.unresolvedBadge}><Text style={styles.unresolvedText}>待處理 ›</Text></View>
       )}
-    </View>
+    </TouchableOpacity>
   );
 }
 
 // ─── Main screen ───────────────────────────────────────────────────────────────
 export default function FamilyDashboard() {
   const navigation = useNavigation<Nav>();
-  const [alerts] = useState<AlertRecord[]>(ALERTS);
+  const [alerts, setAlerts] = useState<AlertRecord[]>([]);
+  const [selectedAlert, setSelectedAlert] = useState<AlertRecord | null>(null);
+  const [showUnresolvedList, setShowUnresolvedList] = useState(false);
   const [permGranted, setPermGranted] = useState<null | boolean>(null);
   const [elders, setElders] = useState<PairedElder[]>([]);
   const [showAddModal, setShowAddModal] = useState(false);
@@ -706,16 +874,18 @@ export default function FamilyDashboard() {
   const [elderForDetail, setElderForDetail] = useState<PairedElder | null>(null);
 
   const loadData = useCallback(async () => {
-    const [list, role, members, fp] = await Promise.all([
+    const [list, role, members, fp, alertList] = await Promise.all([
       getPairedElders(),
       getFamilyRole(),
       getFamilyMembers(),
       getFamilyProfile(),
+      loadAlerts(),
     ]);
     setElders(list);
     setFamilyRole(role);
     setFamilyMembers(members);
     setCurrentFamilyId(fp?.familyId);
+    setAlerts(alertList);
     notifee.getNotificationSettings().then(s => {
       setPermGranted(
         s.authorizationStatus === AuthorizationStatus.AUTHORIZED ||
@@ -725,6 +895,13 @@ export default function FamilyDashboard() {
   }, []);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // 每次回到家屬頁面時重新載入警示（確保後台收到的通知即時顯示）
+  useFocusEffect(
+    useCallback(() => {
+      loadAlerts().then(setAlerts);
+    }, []),
+  );
 
   const handleElderAdded = (elder: PairedElder) => {
     setElders(prev => {
@@ -750,8 +927,69 @@ export default function FamilyDashboard() {
 
   const unresolvedCount = alerts.filter(a => !a.resolved).length;
 
+  // 長輩整體狀態：正常人數／總人數，顏色取最嚴重的那一位
+  const elderStatuses = elders.map(e => getElderStatus(e, alerts));
+  const normalCount = elderStatuses.filter(s => s === 'normal').length;
+  const overallStatus: ElderStatus =
+    elderStatuses.some(s => s === 'critical')  ? 'critical'
+    : elderStatuses.some(s => s === 'attention') ? 'attention'
+    : 'normal';
+
+  const handleResolveAlert = async (id: string) => {
+    const updated = await markAlertResolved(id);
+    setAlerts(updated);
+    setSelectedAlert(prev => (prev?.id === id ? {...prev, resolved: true} : prev));
+  };
+
   return (
     <View style={styles.root}>
+      <Modal
+        visible={showUnresolvedList}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowUnresolvedList(false)}>
+        <View style={{flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end'}}>
+          <View style={{
+            backgroundColor: '#FAF6E8',
+            borderTopLeftRadius: 24,
+            borderTopRightRadius: 24,
+            padding: 20,
+            maxHeight: '80%',
+          }}>
+            <View style={{flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16}}>
+              <Text style={{fontSize: 17, fontWeight: '700', color: '#1F2A3A'}}>
+                待處理警示（{alerts.filter(r => !r.resolved).length} 筆）
+              </Text>
+              <TouchableOpacity onPress={() => setShowUnresolvedList(false)}>
+                <Text style={{fontSize: 16, color: '#7B7A6A', fontWeight: '700'}}>✕</Text>
+              </TouchableOpacity>
+            </View>
+            <ScrollView>
+              {alerts.filter(r => !r.resolved).length === 0 ? (
+                <Text style={{color: '#7B7A6A', textAlign: 'center', paddingVertical: 20}}>
+                  目前沒有待處理警示
+                </Text>
+              ) : (
+                alerts.filter(r => !r.resolved).map(record => (
+                  <AlertItem
+                    key={record.id}
+                    record={record}
+                    onPress={() => {
+                      setShowUnresolvedList(false);
+                      setSelectedAlert(record);
+                    }}
+                  />
+                ))
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
+      <AlertDetailModal
+        alert={selectedAlert}
+        onClose={() => setSelectedAlert(null)}
+        onResolve={handleResolveAlert}
+      />
       <AddElderModal
         visible={showAddModal}
         onClose={() => setShowAddModal(false)}
@@ -786,13 +1024,18 @@ export default function FamilyDashboard() {
             <Text style={styles.summaryLabel}>位長輩</Text>
           </View>
           <View style={[styles.summaryItem, styles.summaryDivider]}>
-            <Text style={[styles.summaryValue, {color: C.safe}]}>{elders.length}</Text>
-            <Text style={styles.summaryLabel}>狀態正常</Text>
+            <Text style={[styles.summaryValue, {color: STATUS_CONFIG[overallStatus].color}]}>
+              {normalCount}/{elders.length}
+            </Text>
+            <Text style={styles.summaryLabel}>長輩狀態</Text>
           </View>
-          <View style={styles.summaryItem}>
+          <TouchableOpacity
+            style={styles.summaryItem}
+            onPress={() => setShowUnresolvedList(true)}
+            activeOpacity={0.7}>
             <Text style={[styles.summaryValue, {color: C.warning}]}>{unresolvedCount}</Text>
-            <Text style={styles.summaryLabel}>待處理警示</Text>
-          </View>
+            <Text style={styles.summaryLabel}>待處理警示 ›</Text>
+          </TouchableOpacity>
         </View>
 
         {/* 快速入口 */}
@@ -860,6 +1103,7 @@ export default function FamilyDashboard() {
             <ElderCard
               key={elder.pairCode}
               elder={elder}
+              alerts={alerts}
               isAdmin={familyRole === 'admin'}
               onPress={() => setElderForDetail(elder)}
               onLongPress={() => setElderToRemove(elder)}
@@ -867,11 +1111,31 @@ export default function FamilyDashboard() {
           ))
         )}
 
-        {alerts.length > 0 && (
+        {alerts.filter(r => r.type !== 'activity').length > 0 && (
           <>
-            <Text style={styles.sectionTitle}>今日警示記錄</Text>
+            <Text style={styles.sectionTitle}>警示記錄</Text>
             <View style={styles.card}>
-              {alerts.map(record => <AlertItem key={record.id} record={record} />)}
+              {alerts.filter(r => r.type !== 'activity').map(record => (
+                <AlertItem
+                  key={record.id}
+                  record={record}
+                  onPress={() => setSelectedAlert(record)}
+                />
+              ))}
+            </View>
+          </>
+        )}
+        {alerts.filter(r => r.type === 'activity').length > 0 && (
+          <>
+            <Text style={styles.sectionTitle}>活躍記錄</Text>
+            <View style={styles.card}>
+              {alerts.filter(r => r.type === 'activity').map(record => (
+                <AlertItem
+                  key={record.id}
+                  record={record}
+                  onPress={() => setSelectedAlert(record)}
+                />
+              ))}
             </View>
           </>
         )}
@@ -958,6 +1222,9 @@ const styles = StyleSheet.create({
   elderAge: {fontSize: sc(13), color: C.sub, marginTop: 2},
   pairedBadge: {backgroundColor: '#ECFDF5', borderRadius: 10, paddingHorizontal: 12, paddingVertical: 5},
   pairedBadgeText: {fontSize: sc(13), fontWeight: '700', color: C.safe},
+  elderBadgeCol: {alignItems: 'flex-end', gap: 4},
+  elderStatusBadge: {borderRadius: 10, paddingHorizontal: 12, paddingVertical: 5},
+  elderStatusBadgeText: {fontSize: sc(13), fontWeight: '700'},
   pairedSince: {fontSize: sc(13), color: C.sub, marginBottom: 4},
   longPressHint: {fontSize: sc(11), color: C.border},
   emptyCard: {
@@ -978,6 +1245,16 @@ const styles = StyleSheet.create({
   alertIcon: {fontSize: 22, marginRight: 12},
   alertContent: {flex: 1},
   alertName: {fontSize: sc(15), fontWeight: '700', color: C.ink},
+  alertTitleRow: {flexDirection: 'row', alignItems: 'center', gap: 6},
+  alertNameShrink: {flexShrink: 1},
+  alertElderTag: {
+    backgroundColor: '#EEF2F7',
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    maxWidth: '45%',
+  },
+  alertElderTagText: {fontSize: sc(11), fontWeight: '700', color: C.primary},
   alertMessage: {fontSize: sc(13), color: C.sub, marginTop: 2},
   alertTime: {fontSize: sc(12), color: C.sub, marginTop: 2},
   resolvedBadge: {backgroundColor: '#F3F4F6', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 4},
@@ -1049,6 +1326,51 @@ const styles = StyleSheet.create({
     borderColor: '#FECACA',
   },
   removeMemberBtnText: {fontSize: sc(13), fontWeight: '700', color: C.sos},
+});
+
+const detailModalSt = StyleSheet.create({
+  overlay: {
+    flex: 1, backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  sheet: {
+    backgroundColor: '#FFFFFF', borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    borderTopWidth: 4, maxHeight: '85%',
+    shadowColor: '#000', shadowOffset: {width: 0, height: -4},
+    shadowOpacity: 0.15, shadowRadius: 12, elevation: 12,
+  },
+  header: {
+    flexDirection: 'row', alignItems: 'flex-start',
+    padding: 20, borderBottomWidth: 1, borderBottomColor: '#E5E7EB',
+  },
+  icon: {fontSize: 32, marginRight: 12, marginTop: 2},
+  headerText: {flex: 1},
+  title: {fontSize: 17, fontWeight: '700', color: '#1A1A2E', lineHeight: 24, marginBottom: 4},
+  time: {fontSize: 13, color: '#6B7280'},
+  closeBtn: {
+    width: 32, height: 32, borderRadius: 16,
+    backgroundColor: '#F3F4F6', alignItems: 'center', justifyContent: 'center',
+    marginLeft: 8,
+  },
+  closeBtnText: {fontSize: 14, color: '#6B7280', fontWeight: '700'},
+  logScroll: {flexShrink: 1},
+  logContent: {padding: 20},
+  logLabel: {
+    fontSize: 12, fontWeight: '700', color: '#6B7280',
+    letterSpacing: 1, textTransform: 'uppercase', marginBottom: 10,
+  },
+  logBody: {fontSize: 15, color: '#1A1A2E', lineHeight: 24},
+  logLink: {fontSize: 15, color: '#274A6E', textDecorationLine: 'underline', fontWeight: '600'},
+  resolveBtn: {
+    margin: 16, backgroundColor: '#274A6E', borderRadius: 14,
+    paddingVertical: 16, alignItems: 'center',
+  },
+  resolveBtnText: {color: '#FFFFFF', fontSize: 16, fontWeight: '700'},
+  resolvedNote: {
+    margin: 16, borderRadius: 14, paddingVertical: 16,
+    alignItems: 'center', backgroundColor: '#ECFDF5',
+  },
+  resolvedNoteText: {color: '#3DB87A', fontSize: 16, fontWeight: '700'},
 });
 
 const rmStyles = StyleSheet.create({

@@ -5,6 +5,7 @@ import {
   type NotificationSettings,
 } from './NotificationSettingsService';
 import {getElderDisplayName} from './ProfileService';
+import type {AlertRecord} from './AlertStorageService';
 
 // ─── Channel IDs ──────────────────────────────────────────────────────────────
 
@@ -98,17 +99,35 @@ function log(type: string, message: string): void {
   console.log(`[NotificationService][${ts}][${type}] ${message}`);
 }
 
-async function localAlert(title: string, body: string, highPriority = false): Promise<void> {
-  // TODO: replace with HTTP call → backend → Firebase Admin SDK → FCM push to family devices
-  await notifee.displayNotification({
-    title,
-    body,
-    android: {
-      channelId: highPriority ? CH_ALERT : CH_GENERAL,
-      pressAction: {id: 'default'},
-      smallIcon: '@mipmap/ic_launcher',
-    },
-  });
+/**
+ * 發送推播給家屬裝置（透過後端 Firebase Admin SDK → FCM）。
+ * 取代原本只在長輩裝置顯示的本地通知。
+ */
+async function localAlert(
+  title: string,
+  body: string,
+  type: AlertRecord['type'],
+  _highPriority = false,
+): Promise<void> {
+  try {
+    const { sendFamilyNotification } = require('../api/notificationApi');
+    const deviceId = await AsyncStorage.getItem('deviceId');
+    if (!deviceId) {
+      console.warn('[NotificationService] 無 deviceId，無法發送推播給家屬');
+      return;
+    }
+    // 帶上長輩身份與警示類型，讓家屬端能分辨屬於哪一位長輩、屬於哪一種警示
+    const elderId = await AsyncStorage.getItem('backendElderId');
+    const elderName = await getElderDisplayName();
+    await sendFamilyNotification(deviceId, title, body, {
+      elderId: elderId ?? '',
+      elderName: elderName ?? '',
+      type,
+    });
+    log('remote_fcm', `已送出推播：${title} — ${body}`);
+  } catch (e) {
+    console.warn('[NotificationService] 發送家屬推播失敗:', e);
+  }
 }
 
 // ─── Settings helper ──────────────────────────────────────────────────────────
@@ -134,7 +153,7 @@ export function sendMorningCheckin(name: string, time: string, period: 1 | 2): v
       ? `${name} 今天 ${time} 有起來活動`
       : `${name} 今天 ${time} 起床了`;
     log('morning_checkin', `${emoji} ${body}`);
-    localAlert(period === 1 ? '晨間活動' : '早安簽到', `${emoji} ${body}`).catch(console.error);
+    localAlert(period === 1 ? '晨間活動' : '早安簽到', `${emoji} ${body}`, 'activity').catch(console.error);
   });
 }
 
@@ -150,7 +169,7 @@ export function sendFortuneCheckin(name: string, time: string, merged: boolean):
       ? `${name} 今天 ${time} 起床並看了今日運勢，心情很好 😊`
       : `${name} 今天 ${time} 看了今日運勢，心情很好 😊`;
     log('fortune_viewed', `🌅 ${body}`);
-    localAlert('今日運勢', `🌅 ${body}`).catch(console.error);
+    localAlert('今日運勢', `🌅 ${body}`, 'activity').catch(console.error);
   });
 }
 
@@ -161,7 +180,7 @@ export function sendInactivityAlert(name: string, hours: number): void {
     const m = Math.floor((hours - h) * 60);
     const body = `${name} 已 ${h} 小時 ${m} 分鐘未有任何活躍記錄`;
     log('inactivity', body);
-    localAlert('不活躍警報', body).catch(console.error);
+    localAlert('不活躍警報', body, 'noCheckIn').catch(console.error);
   });
 }
 
@@ -170,21 +189,21 @@ export function sendLowBatteryAlert(name: string, pct: number): void {
     if (!ok) return;
     const body = `🔋 ${name}手機電量僅剩 ${pct}%，請提醒他記得充電`;
     log('low_battery', body);
-    localAlert('電量低警報', body).catch(console.error);
+    localAlert('電量低警報', body, 'lowBattery').catch(console.error);
   });
 }
 
 export function sendStepAlert(name: string, steps: number): void {
   const body = `${name} 今日步數僅 ${steps.toLocaleString('zh-TW')} 步，活動量偏低`;
   log('step_alert', body);
-  localAlert('步數偏低', body).catch(console.error);
+  localAlert('步數偏低', body, 'activity').catch(console.error);
 }
 
 export function sendSOS(name: string, location: string): void {
   // SOS is always enabled — no settings check
   const body = `${name} 在「${location}」發出緊急求援！`;
   log('sos', body);
-  localAlert('🆘 SOS 緊急求援', body, true).catch(console.error);
+  localAlert('🆘 SOS 緊急求援', body, 'sos', true).catch(console.error);
 }
 
 export async function sendSOSImmediate(name: string, time: string): Promise<void> {
@@ -192,6 +211,7 @@ export async function sendSOSImmediate(name: string, time: string): Promise<void
   await localAlert(
     '🆘 緊急求救',
     `🚨 緊急求救！\n${name} 於 ${time} 按下求救按鈕\n📍 正在取得位置中，請稍候...\n請立即撥打電話確認狀況`,
+    'sos',
     true,
   );
 }
@@ -203,6 +223,7 @@ export async function sendSOSWithLocation(
   await localAlert(
     '📍 位置已取得',
     `📍 ${name} 的即時位置已取得\nhttps://maps.google.com/?q=${lat},${lng}\n精確度：約 ${accuracy} 公尺`,
+    'sos',
     true,
   );
 }
@@ -212,6 +233,7 @@ export async function sendSOSNoLocation(name: string): Promise<void> {
   await localAlert(
     '⚠️ 無法取得位置',
     `⚠️ 無法取得 ${name} 的位置\n請立即撥打電話確認狀況`,
+    'sos',
     true,
   );
 }
@@ -219,7 +241,7 @@ export async function sendSOSNoLocation(name: string): Promise<void> {
 export function sendFallDetected(name: string, location: string): void {
   const body = `偵測到 ${name} 在「${location}」可能發生跌倒！`;
   log('fall', body);
-  localAlert('⚠️ 跌倒偵測警報', body, true).catch(console.error);
+  localAlert('⚠️ 跌倒偵測警報', body, 'fall', true).catch(console.error);
 }
 
 export async function sendFallDetectedImmediate(name: string, time: string): Promise<void> {
@@ -227,6 +249,7 @@ export async function sendFallDetectedImmediate(name: string, time: string): Pro
   await localAlert(
     '⚠️ 疑似跌倒！',
     `⚠️ 疑似跌倒！\n${name} 於 ${time} 偵測到異常衝擊\n📍 正在取得位置...\n請立即撥打電話確認狀況`,
+    'fall',
     true,
   );
 }
@@ -238,6 +261,7 @@ export async function sendFallDetectedWithLocation(
   await localAlert(
     '📍 跌倒位置已取得',
     `📍 ${name} 的位置已取得\nhttps://maps.google.com/?q=${lat},${lng}\n精確度：約 ${accuracy} 公尺`,
+    'fall',
     true,
   );
 }
@@ -247,6 +271,7 @@ export async function sendFallDetectedNoLocation(name: string): Promise<void> {
   await localAlert(
     '⚠️ 無法取得位置',
     `⚠️ 無法取得 ${name} 的位置\n請立即撥打電話確認狀況`,
+    'fall',
     true,
   );
 }
@@ -258,6 +283,7 @@ export async function sendFallSensitivityWarning(): Promise<void> {
     await localAlert(
       '跌倒偵測提醒',
       `⚠️ ${name} 今天已發生 3 次誤報\n建議調低跌倒偵測靈敏度以減少誤報`,
+      'activity',
       false,
     );
   } catch {}
@@ -271,7 +297,7 @@ export function sendMedicationReminder(
 ): void {
   const body = `${medName} 該服藥了！（${contextLabel} ${time}）`;
   log('medication_reminder', `💊 ${body}`);
-  localAlert('💊 服藥提醒', body).catch(console.error);
+  localAlert('💊 服藥提醒', body, 'medication').catch(console.error);
 }
 
 // ⚠️ Missed medication alert (2 hours overdue — respects settings)
@@ -284,7 +310,7 @@ export function sendMissedMedicine(
     if (!ok) return;
     const body = `${name} 今天 ${scheduledTime} 的${medName}還沒服用`;
     log('missed_medicine', `⚠️ ${body}`);
-    localAlert('服藥未完成提醒', `⚠️ ${body}`).catch(console.error);
+    localAlert('服藥未完成提醒', `⚠️ ${body}`, 'medication').catch(console.error);
   });
 }
 
@@ -300,7 +326,7 @@ export function sendSleepWindowMissedBundle(
     const list = missedMeds.map(m => `• ${m.name}（${m.time}）`).join('\n');
     const body = `昨晚 ${elderName} 有藥物未確認服用：\n${list}\n請今天確認是否有服藥`;
     log('sleep_bundle', `⚠️ ${body}`);
-    localAlert('⚠️ 昨晚服藥提醒', body).catch(console.error);
+    localAlert('⚠️ 昨晚服藥提醒', body, 'medication').catch(console.error);
   });
 }
 
