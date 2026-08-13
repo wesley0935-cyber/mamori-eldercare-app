@@ -24,6 +24,8 @@ import {
   type FamilyRole,
 } from '../../services/ProfileService';
 import {useAppContext} from '../../context/AppContext';
+import {GoogleSignin} from '@react-native-google-signin/google-signin';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const COLORS = {
   background: '#F0F3FA',
@@ -167,7 +169,8 @@ function LockedRowItem({row}: {row: LockedRow}) {
 
 export default function SettingsScreen() {
   const navigation = useNavigation();
-  const {resetApp, showPermissionGuide} = useAppContext();
+  const {resetApp, showPermissionGuide, logoutFamily} = useAppContext();
+  const [logoutModalVisible, setLogoutModalVisible] = useState(false);
 
   const [settings, setSettings] = useState<NotificationSettings>({
     morningActivity: true,
@@ -221,8 +224,30 @@ export default function SettingsScreen() {
     await saveNotificationSettings(updated);
   };
 
+  // 安全登出 Google（未登入時不拋錯）
+  const signOutGoogle = async () => {
+    try {
+      await GoogleSignin.signOut();
+    } catch {
+      // 未曾用 Google 登入或已登出，忽略
+    }
+  };
+
+  const handleLogout = async () => {
+    setLogoutModalVisible(false);
+    await signOutGoogle();
+    await AsyncStorage.multiRemove([
+      'familyToken',
+      'familyEmail',
+      'familyName',
+      'familyPhoto',
+    ]);
+    logoutFamily();
+  };
+
   const handleLeaveFamily = async () => {
     setLeaveModalVisible(false);
+    await signOutGoogle();
     await clearAllAppData();
     resetApp();
   };
@@ -239,6 +264,7 @@ export default function SettingsScreen() {
     }
     setResetting(true);
     setResetModalVisible(false);
+    await signOutGoogle();
     await clearAllAppData();
     resetApp();
   };
@@ -335,6 +361,18 @@ export default function SettingsScreen() {
               <View style={styles.divider} />
             </>
           )}
+          {currentRole === 'family' && (
+            <>
+              <TouchableOpacity
+                style={styles.logoutBtn}
+                onPress={() => setLogoutModalVisible(true)}
+                accessibilityRole="button"
+                accessibilityLabel="登出">
+                <Text style={styles.logoutBtnText}>登出</Text>
+              </TouchableOpacity>
+              <View style={styles.divider} />
+            </>
+          )}
           <TouchableOpacity
             style={styles.resetBtn}
             onPress={handleResetPress}
@@ -347,8 +385,8 @@ export default function SettingsScreen() {
             style={styles.permGuideBtn}
             onPress={showPermissionGuide}
             accessibilityRole="button"
-            accessibilityLabel="重新查看權限引導（測試用）">
-            <Text style={styles.permGuideBtnText}>重新查看權限引導（測試用）</Text>
+            accessibilityLabel="重新查看權限設定說明">
+            <Text style={styles.permGuideBtnText}>重新查看權限設定說明</Text>
           </TouchableOpacity>
         </View>
 
@@ -377,6 +415,34 @@ export default function SettingsScreen() {
                 style={[styles.modalBtn, styles.modalConfirmBtn]}
                 onPress={handleLeaveFamily}>
                 <Text style={styles.modalConfirmText}>確認退出</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* ── 登出 Modal ── */}
+      <Modal
+        visible={logoutModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setLogoutModalVisible(false)}>
+        <View style={styles.modalOverlay}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>確認登出？</Text>
+            <Text style={styles.modalBody}>
+              登出後需重新使用 Google 帳號登入，配對的長輩資料會保留。
+            </Text>
+            <View style={styles.modalBtnRow}>
+              <TouchableOpacity
+                style={[styles.modalBtn, styles.modalCancelBtn]}
+                onPress={() => setLogoutModalVisible(false)}>
+                <Text style={styles.modalCancelText}>取消</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={[styles.modalBtn, styles.modalConfirmBtn]}
+                onPress={handleLogout}>
+                <Text style={styles.modalConfirmText}>確認登出</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -522,13 +588,14 @@ const styles = StyleSheet.create({
   permGuideBtn: {
     paddingHorizontal: 16,
     paddingVertical: 14,
+    minHeight: 52,
     alignItems: 'center',
     justifyContent: 'center',
   },
   permGuideBtnText: {
-    fontSize: 13,
-    fontWeight: '400',
-    color: COLORS.locked,  // #9CA3AF 灰色，不顯眼
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
   },
   leaveFamilyBtn: {
     paddingHorizontal: 16,
@@ -541,6 +608,18 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '500',
     color: COLORS.locked,
+  },
+  logoutBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 16,
+    minHeight: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logoutBtnText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
   },
   resetBtn: {
     paddingHorizontal: 16,

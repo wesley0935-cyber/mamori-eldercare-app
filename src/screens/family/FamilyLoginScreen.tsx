@@ -1,10 +1,13 @@
 import React, {useState} from 'react';
 import {
-  View, Text, TextInput, TouchableOpacity,
-  StyleSheet, ActivityIndicator, Alert, KeyboardAvoidingView, Platform,
+  View, Text, TouchableOpacity,
+  StyleSheet, ActivityIndicator, Alert,
 } from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
-
+import {
+  signInWithGoogle,
+  saveFamilySession,
+  googleErrorMessage,
+} from '../../services/GoogleAuthService';
 
 const C = {
   bg: '#EFEAD9', card: '#FAF6E8', border: '#DCD3B8',
@@ -17,61 +20,52 @@ interface Props {
 }
 
 export default function FamilyLoginScreen({onLoginSuccess}: Props) {
-  const [email, setEmail] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const handleLogin = async () => {
-    if (!email.trim()) {
-      Alert.alert('請輸入 Email');
-      return;
-    }
+  const handleGoogleLogin = async () => {
     setLoading(true);
     try {
-      await AsyncStorage.setItem('familyToken', 'local_' + email.trim());
-      await AsyncStorage.setItem('familyEmail', email.trim());
+      const user = await signInWithGoogle();
+      if (!user) {return;} // 使用者取消
+      await saveFamilySession(user);
       onLoginSuccess();
-    } catch (e: any) {
-      Alert.alert('登入失敗', e?.message || '請稍後再試');
+    } catch (e: unknown) {
+      const msg = googleErrorMessage(e);
+      if (msg) {Alert.alert('登入失敗', msg);}
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+    <View style={styles.container}>
       <View style={styles.card}>
         <Text style={styles.logo}>默</Text>
         <Text style={styles.title}>默伴守護</Text>
         <Text style={styles.subtitle}>家屬登入</Text>
 
-        <TextInput
-          style={styles.input}
-          placeholder="請輸入 Email"
-          placeholderTextColor={C.sub}
-          value={email}
-          onChangeText={setEmail}
-          keyboardType="email-address"
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
-
         <TouchableOpacity
-          style={[styles.btn, loading && {opacity: 0.6}]}
-          onPress={handleLogin}
-          disabled={loading}>
-          {loading
-            ? <ActivityIndicator color={C.white} />
-            : <Text style={styles.btnText}>登入 / 註冊</Text>
-          }
+          style={[styles.googleBtn, loading && {opacity: 0.6}]}
+          onPress={handleGoogleLogin}
+          disabled={loading}
+          activeOpacity={0.8}>
+          {loading ? (
+            <ActivityIndicator color={C.primary} />
+          ) : (
+            <>
+              <View style={styles.gIcon}>
+                <Text style={styles.gIconText}>G</Text>
+              </View>
+              <Text style={styles.googleBtnText}>使用 Google 登入</Text>
+            </>
+          )}
         </TouchableOpacity>
 
         <Text style={styles.hint}>
-          輸入 Email 即可登入或自動註冊帳號
+          使用您的 Google 帳號登入，即可管理家中長輩
         </Text>
       </View>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
@@ -85,17 +79,20 @@ const styles = StyleSheet.create({
   logo: {fontSize: 48, color: C.primary, fontWeight: 'bold', marginBottom: 4},
   title: {fontSize: 22, color: C.ink, fontWeight: 'bold', marginBottom: 4},
   subtitle: {fontSize: 16, color: C.sub, marginBottom: 28},
-  input: {
-    width: '100%', backgroundColor: '#FAF7EE',
-    borderWidth: 1, borderColor: C.border, borderRadius: 10,
-    paddingHorizontal: 16, paddingVertical: 14,
-    fontSize: 18, color: C.ink, marginBottom: 16,
-  },
-  btn: {
-    width: '100%', backgroundColor: C.primary,
+  googleBtn: {
+    width: '100%', backgroundColor: C.white,
     borderRadius: 10, paddingVertical: 14,
-    alignItems: 'center', marginBottom: 12,
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    borderWidth: 1, borderColor: C.border,
+    marginBottom: 16,
   },
-  btnText: {color: C.white, fontSize: 18, fontWeight: 'bold'},
+  gIcon: {
+    width: 24, height: 24, borderRadius: 12,
+    backgroundColor: '#FFFFFF', alignItems: 'center', justifyContent: 'center',
+    marginRight: 12,
+    borderWidth: 1, borderColor: C.border,
+  },
+  gIconText: {color: '#4285F4', fontSize: 16, fontWeight: '900'},
+  googleBtnText: {color: C.ink, fontSize: 18, fontWeight: 'bold'},
   hint: {fontSize: 13, color: C.sub, textAlign: 'center'},
 });

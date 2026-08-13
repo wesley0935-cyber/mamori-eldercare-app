@@ -11,7 +11,9 @@ import {
   Alert,
   Share,
   Clipboard,
+  ActivityIndicator,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import QRCode from 'react-native-qrcode-svg';
 import {Camera, useCameraDevice, useCodeScanner} from 'react-native-vision-camera';
 import {
@@ -21,17 +23,19 @@ import {
   addPairedElder,
   addFamilyMember,
   getFamilyProfile,
-  tryPairWithCode,
-  generatePairCode,
+  confirmPairingWithCode,
   generateAndSavePairCode,
   getElderPairCodeRecord,
-  updateElderPairCode,
-  verifyInviteCode,
   verifyInviteCodeStatus,
   type AppRole,
   type ElderProfile,
   type FamilyRole,
 } from '../../services/ProfileService';
+import {
+  signInWithGoogle,
+  saveFamilySession,
+  googleErrorMessage,
+} from '../../services/GoogleAuthService';
 
 // ─── Design tokens ────────────────────────────────────────────────────────────
 const C = {
@@ -106,8 +110,185 @@ function RoleStep({onSelect}: {onSelect: (r: AppRole) => void}) {
   );
 }
 
-// ─── QR scanner used by elder ─────────────────────────────────────────────────
-function ElderQRScanner({
+// ─── Step 2a: Elder — input name/age ─────────────────────────────────────────
+function ElderInfoStep({onNext}: {onNext: (name: string, age: number) => void}) {
+  const [name, setName] = useState('');
+  const [ageText, setAgeText] = useState('');
+
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      style={s.stepWrap}>
+      <Text style={s.stepTitle}>長輩基本資料</Text>
+      <Text style={s.stepHint}>請輸入長輩的姓名與年齡</Text>
+
+      <Text style={s.label}>姓名</Text>
+      <TextInput
+        style={s.input}
+        value={name}
+        onChangeText={setName}
+        placeholder="例如：王爺爺"
+        placeholderTextColor={C.sub}
+        returnKeyType="next"
+        accessibilityLabel="長輩姓名"
+      />
+
+      <Text style={s.label}>年齡</Text>
+      <TextInput
+        style={s.input}
+        value={ageText}
+        onChangeText={setAgeText}
+        placeholder="例如：78"
+        placeholderTextColor={C.sub}
+        keyboardType="number-pad"
+        returnKeyType="done"
+        accessibilityLabel="長輩年齡"
+      />
+
+      <TouchableOpacity
+        style={[s.primaryBtn, {backgroundColor: C.elder}]}
+        onPress={() => {
+          const trimmed = name.trim();
+          const age = parseInt(ageText, 10);
+          if (!trimmed) {Alert.alert('請輸入姓名'); return;}
+          if (isNaN(age) || age < 1 || age > 130) {Alert.alert('請輸入正確年齡'); return;}
+          onNext(trimmed, age);
+        }}>
+        <Text style={s.primaryBtnText}>下一步</Text>
+      </TouchableOpacity>
+    </KeyboardAvoidingView>
+  );
+}
+
+// ─── Step 3a: Elder — show QR code ───────────────────────────────────────────
+function ElderCodeDisplayStep({
+  elderName,
+  elderAge,
+  onDone,
+}: {
+  elderName: string;
+  elderAge: number;
+  onDone: () => void;
+}) {
+  const [pairCode, setPairCode] = useState('');
+  const [codeCreatedAt, setCodeCreatedAt] = useState(Date.now());
+  const [loading, setLoading] = useState(true);
+  const [regenerating, setRegenerating] = useState(false);
+
+  useEffect(() => {
+    generateCode();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const generateCode = async () => {
+    setLoading(true);
+    try {
+      const record = await generateAndSavePairCode({elderName, elderAge});
+      setPairCode(record.code);
+      setCodeCreatedAt(record.createdAt);
+      // 存入 elder profile
+      await setElderProfile({name: elderName, age: elderAge, pairCode: record.code});
+      await setAppRole('elder');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRegenerate = async () => {
+    if (regenerating) return;
+    setRegenerating(true);
+    try {
+      const record = await generateAndSavePairCode({elderName, elderAge});
+      setPairCode(record.code);
+      setCodeCreatedAt(record.createdAt);
+      await setElderProfile({name: elderName, age: elderAge, pairCode: record.code});
+    } finally {
+      setRegenerating(false);
+    }
+  };
+
+  const handleCopy = () => {
+    Clipboard.setString(pairCode);
+    Alert.alert('已複製', '配對碼已複製到剪貼簿');
+  };
+
+  const handleShare = async () => {
+    try {
+      await Share.share({
+        message: `請在家屬手機上打開默伴守護 APP，輸入配對碼：${pairCode}`,
+      });
+    } catch {}
+  };
+
+  const hoursLeft = Math.max(
+    0,
+    Math.ceil((codeCreatedAt + 48 * 3_600_000 - Date.now()) / 3_600_000),
+  );
+
+  const qrData = JSON.stringify({code: pairCode, elderName});
+
+  if (loading) {
+    return (
+      <View style={[s.stepWrap, {alignItems: 'center', justifyContent: 'center'}]}>
+        <Text style={s.stepHint}>產生配對碼中...</Text>
+      </View>
+    );
+  }
+
+  return (
+    <ScrollView contentContainerStyle={s.stepWrap}>
+      <CodeBadge label="長輩配對碼・6 位數" color={C.elder} bg="#E3EBF4" />
+      <Text style={s.stepTitle}>請家屬掃描</Text>
+      <Text style={s.stepHint}>
+        請在家屬手機上打開默伴守護，掃描此 QR Code 或輸入下方配對碼
+      </Text>
+
+      <View style={[s.highlightBox, hoursLeft < 12 && {borderColor: '#C0392B'}]}>
+        <Text style={[s.highlightText, hoursLeft < 12 && {color: '#C0392B'}]}>
+          {hoursLeft > 0
+            ? `有效期限：剩餘 ${hoursLeft} 小時`
+            : '配對碼已過期，請重新產生'}
+        </Text>
+      </View>
+
+      <View style={s.qrCard}>
+        <QRCode value={qrData} size={220} color={C.elder} backgroundColor={C.washi} />
+      </View>
+
+      <View style={s.backupCodeRow}>
+        <Text style={s.backupCodeLabel}>長輩配對碼</Text>
+        <Text style={[s.backupCodeValue, {color: C.elder}]}>{pairCode}</Text>
+      </View>
+
+      <View style={s.actionRow}>
+        <TouchableOpacity style={[s.halfBtn, {borderColor: C.elder}]} onPress={handleCopy}>
+          <Text style={[s.halfBtnText, {color: C.elder}]}>📋 複製配對碼</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[s.halfBtn, {borderColor: C.elder}]} onPress={handleShare}>
+          <Text style={[s.halfBtnText, {color: C.elder}]}>📤 分享</Text>
+        </TouchableOpacity>
+      </View>
+
+      <TouchableOpacity
+        style={[s.outlineBtn, {borderColor: C.orange, marginBottom: 8}, regenerating && {opacity: 0.5}]}
+        onPress={handleRegenerate}
+        disabled={regenerating}>
+        <Text style={[s.outlineBtnText, {color: C.orange}]}>
+          {regenerating ? '產生中...' : '🔄 重新產生配對碼'}
+        </Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[s.primaryBtn, {backgroundColor: C.elder}]}
+        onPress={onDone}>
+        <Text style={s.primaryBtnText}>家屬已完成配對，進入 APP</Text>
+      </TouchableOpacity>
+    </ScrollView>
+  );
+}
+
+// ─── QR scanner ───────────────────────────────────────────────────────────────
+function FamilyQRScanner({
   onFound,
   onClose,
 }: {
@@ -159,7 +340,7 @@ function ElderQRScanner({
           {!hasPermission ? '相機權限被拒絕\n請至設定開啟，或改用手動輸入' : '找不到相機裝置'}
         </Text>
         <TouchableOpacity
-          style={[s.primaryBtn, {backgroundColor: C.elder, marginTop: 20, width: 180}]}
+          style={[s.primaryBtn, {backgroundColor: C.family, marginTop: 20, width: 180}]}
           onPress={onClose}>
           <Text style={s.primaryBtnText}>改用手動輸入</Text>
         </TouchableOpacity>
@@ -176,12 +357,10 @@ function ElderQRScanner({
         isActive={true}
         codeScanner={codeScanner}
       />
-      {/* Overlay */}
       <View style={[s.overlay, {top: 0, height: '30%'}]} />
       <View style={[s.overlay, {bottom: 0, height: '30%'}]} />
-      <View style={[s.overlay, {top: '30%', left: 0, width: '50%', height: BOX, marginRight: BOX / 2}]} />
-      <View style={[s.overlay, {top: '30%', right: 0, width: '50%', height: BOX, marginLeft: BOX / 2}]} />
-      {/* Scan box */}
+      <View style={[s.overlay, {top: '30%', left: 0, width: '50%', height: BOX}]} />
+      <View style={[s.overlay, {top: '30%', right: 0, width: '50%', height: BOX}]} />
       <View style={[s.scanBox, {width: BOX, height: BOX}]}>
         <View style={[s.corner, s.cornerTL]} />
         <View style={[s.corner, s.cornerTR]} />
@@ -189,7 +368,7 @@ function ElderQRScanner({
         <View style={[s.corner, s.cornerBR]} />
       </View>
       <View style={s.scanInstruction}>
-        <Text style={s.scanInstructionText}>將家屬手機的 QR Code 對準框內</Text>
+        <Text style={s.scanInstructionText}>將長輩手機的 QR Code 對準框內</Text>
       </View>
       <TouchableOpacity style={s.scanCloseBtn} onPress={onClose}>
         <Text style={s.scanCloseBtnText}>✕ 改用手動輸入</Text>
@@ -207,120 +386,77 @@ function CodeBadge({label, color, bg}: {label: string; color: string; bg: string
   );
 }
 
-// ─── Step 2a: Elder — scan / input code from family ──────────────────────────
-function ElderScanStep({onDone}: {onDone: () => void}) {
-  const [mode, setMode] = useState<'input' | 'scan'>('input');
-  const [code, setCode] = useState('');
+// ─── Step 1b: Family — Google login ───────────────────────────────────────────
+function FamilyLoginStep({onNext}: {onNext: (googleName: string) => void}) {
   const [loading, setLoading] = useState(false);
-  const [found, setFound] = useState<ElderProfile | null>(null);
 
-  const handleVerify = async (c: string) => {
+  const handleLogin = async () => {
     setLoading(true);
     try {
-      const result = await tryPairWithCode(c);
-      if (result.status === 'expired') {
-        Alert.alert('配對碼已過期', '請請家屬重新產生配對碼');
-        return;
-      }
-      if (result.status !== 'ok' || !result.profile) {
-        Alert.alert('配對碼無效', '請確認家屬手機上顯示的配對碼是否正確');
-        return;
-      }
-      setMode('input');
-      setFound(result.profile);
+      const user = await signInWithGoogle();
+      if (!user) {return;} // 使用者取消
+      await saveFamilySession(user);
+      onNext(user.name);
+    } catch (e: unknown) {
+      const msg = googleErrorMessage(e);
+      if (msg) {Alert.alert('登入失敗', msg);}
     } finally {
       setLoading(false);
     }
   };
 
-  const handleConfirm = async () => {
-    if (!found) {return;}
-    await setAppRole('elder');
-    onDone();
-  };
-
-  if (found) {
-    return (
-      <View style={s.stepWrap}>
-        <Text style={s.stepTitle}>配對確認</Text>
-        <View style={s.confirmCard}>
-          <Text style={s.confirmIcon}>👴</Text>
-          <Text style={s.confirmName}>{found.name}</Text>
-          <Text style={s.confirmAge}>{found.age} 歲</Text>
-        </View>
-        <Text style={s.stepHint}>請確認這是正確的長輩資料</Text>
-        <TouchableOpacity
-          style={[s.primaryBtn, {backgroundColor: C.elder}]}
-          onPress={handleConfirm}>
-          <Text style={s.primaryBtnText}>確認，開始使用</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={s.skipBtn} onPress={() => {setFound(null); setCode('');}}>
-          <Text style={s.skipBtnText}>不是，重新配對</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
-  if (mode === 'scan') {
-    return (
-      <View style={{flex: 1}}>
-        <ElderQRScanner
-          onFound={c => handleVerify(c)}
-          onClose={() => setMode('input')}
-        />
-      </View>
-    );
-  }
-
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      style={s.stepWrap}>
-      <CodeBadge label="長輩配對碼・6 位數" color={C.elder} bg="#E3EBF4" />
-      <Text style={s.stepTitle}>輸入長輩配對碼</Text>
+    <View style={s.stepWrap}>
+      <View style={s.heroRow}>
+        <LogoMark size={60} />
+        <View style={s.heroTextBlock}>
+          <Text style={s.stepTitle}>家屬登入</Text>
+          <Text style={s.stepHint}>請先使用 Google 帳號登入</Text>
+        </View>
+      </View>
+
+      <TouchableOpacity
+        style={[s.googleBtn, loading && {opacity: 0.6}]}
+        onPress={handleLogin}
+        disabled={loading}
+        activeOpacity={0.8}
+        accessibilityRole="button"
+        accessibilityLabel="使用 Google 登入">
+        {loading ? (
+          <ActivityIndicator color={C.family} />
+        ) : (
+          <>
+            <View style={s.gIcon}>
+              <Text style={s.gIconText}>G</Text>
+            </View>
+            <Text style={s.googleBtnText}>使用 Google 登入</Text>
+          </>
+        )}
+      </TouchableOpacity>
+
       <Text style={s.stepHint}>
-        請輸入家屬手機上顯示的 6 位數長輩配對碼，或掃描 QR Code
+        沒有 Google 帳號？在登入畫面點「建立帳戶」即可當場申請。
       </Text>
-
-      <TextInput
-        style={[s.input, s.codeInput]}
-        value={code}
-        onChangeText={t => setCode(t.replace(/\D/g, '').slice(0, 6))}
-        placeholder="000000"
-        placeholderTextColor={C.sub}
-        keyboardType="number-pad"
-        maxLength={6}
-        returnKeyType="done"
-        onSubmitEditing={() => {if (code.length === 6) {handleVerify(code);}}}
-        accessibilityLabel="配對碼"
-      />
-
-      <TouchableOpacity
-        style={[s.primaryBtn, {backgroundColor: C.elder, opacity: loading || code.length !== 6 ? 0.55 : 1}]}
-        onPress={() => handleVerify(code)}
-        disabled={loading || code.length !== 6}>
-        <Text style={s.primaryBtnText}>{loading ? '配對中...' : '確認配對'}</Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[s.outlineBtn, {borderColor: C.elder, marginTop: 12}]}
-        onPress={() => setMode('scan')}>
-        <Text style={[s.outlineBtnText, {color: C.elder}]}>📷 掃描 QR Code</Text>
-      </TouchableOpacity>
-    </KeyboardAvoidingView>
+    </View>
   );
 }
 
 // ─── Step 2b: Family name ─────────────────────────────────────────────────────
-function FamilyNameStep({onNext}: {onNext: (name: string) => void}) {
-  const [name, setName] = useState('');
+function FamilyNameStep({
+  onNext,
+  initialName,
+}: {
+  onNext: (name: string) => void;
+  initialName?: string;
+}) {
+  const [name, setName] = useState(initialName ?? '');
 
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       style={s.stepWrap}>
       <Text style={s.stepTitle}>家屬資料</Text>
-      <Text style={s.stepHint}>請填寫您的姓名</Text>
+      <Text style={s.stepHint}>請確認或修改您的姓名</Text>
 
       <Text style={s.label}>姓名</Text>
       <TextInput
@@ -346,244 +482,133 @@ function FamilyNameStep({onNext}: {onNext: (name: string) => void}) {
   );
 }
 
-// ─── Step 3b: Family choice ───────────────────────────────────────────────────
-function FamilyChoiceStep({
-  onPrimary,
-  onJoin,
+// ─── Step 3b: Family — scan or input elder's code ────────────────────────────
+function FamilyScanStep({
+  familyName,
+  onDone,
 }: {
-  onPrimary: () => void;
-  onJoin: () => void;
+  familyName: string;
+  onDone: () => void;
 }) {
-  return (
-    <View style={s.stepWrap}>
-      <Text style={s.stepTitle}>如何使用？</Text>
-      <Text style={s.stepHint}>請選擇您的加入方式</Text>
-
-      <TouchableOpacity
-        style={[s.roleBtn, {backgroundColor: C.family}]}
-        onPress={onPrimary}
-        accessibilityRole="button">
-        <Text style={s.roleBtnIcon}>📱</Text>
-        <View style={s.roleBtnInfo}>
-          <Text style={s.roleBtnLabel}>設定長輩的手機</Text>
-          <Text style={s.roleBtnSub}>產生配對碼，讓長輩手機掃描</Text>
-        </View>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[s.roleBtn, {backgroundColor: '#7C6FA0'}]}
-        onPress={onJoin}
-        accessibilityRole="button">
-        <Text style={s.roleBtnIcon}>👥</Text>
-        <View style={s.roleBtnInfo}>
-          <Text style={s.roleBtnLabel}>加入現有家庭</Text>
-          <Text style={s.roleBtnSub}>輸入管理員家屬的邀請碼（8 位數）</Text>
-        </View>
-      </TouchableOpacity>
-
-      <Text style={s.choiceNote}>
-        「設定長輩的手機」：您為管理員，可管理藥物和設定{'\n'}
-        「加入現有家庭」：以查看者身份加入，可查看長輩狀態
-      </Text>
-    </View>
-  );
-}
-
-// ─── Step 4b-A: Family enters elder's info → family generates code ────────────
-function FamilyElderInfoStep({
-  onNext,
-}: {
-  onNext: (profile: ElderProfile) => void;
-}) {
-  const [name, setName] = useState('');
-  const [ageText, setAgeText] = useState('');
+  const [mode, setMode] = useState<'input' | 'scan'>('input');
+  const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
+  const [found, setFound] = useState<ElderProfile | null>(null);
 
-  const handleNext = async () => {
-    const trimmed = name.trim();
-    const age = parseInt(ageText, 10);
-    if (!trimmed) {Alert.alert('請輸入長輩姓名'); return;}
-    if (isNaN(age) || age < 1 || age > 130) {Alert.alert('請輸入正確年齡'); return;}
+  const handleVerify = async (c: string) => {
     setLoading(true);
-    const record = await generateAndSavePairCode();
-    const profile: ElderProfile = {name: trimmed, age, pairCode: record.code};
-    // 存入 AsyncStorage，讓長輩端可以用 tryPairWithCode 查到
-    await setElderProfile(profile);
-    setLoading(false);
-    onNext(profile);
+    try {
+      const result = await confirmPairingWithCode(c);
+      if (result.status === 'expired') {
+        Alert.alert('配對碼已過期', '請請長輩重新產生配對碼');
+        return;
+      }
+      if (result.status !== 'ok' || !result.profile) {
+        Alert.alert('配對碼無效', '請確認長輩手機上顯示的配對碼是否正確');
+        return;
+      }
+      setMode('input');
+      setFound(result.profile);
+    } finally {
+      setLoading(false);
+    }
   };
+
+  const handleConfirm = async () => {
+    if (!found) {return;}
+    await setAppRole('family');
+    await setFamilyProfile({name: familyName, role: 'admin'});
+    const now = new Date().toISOString();
+    await addPairedElder({
+      pairCode: found.pairCode,
+      name: found.name,
+      age: found.age,
+      pairedAt: now,
+      elderId: found.elderId ?? undefined,
+    });
+    const fp = await getFamilyProfile();
+    await addFamilyMember({
+      name: familyName,
+      pairedAt: now,
+      familyId: fp?.familyId,
+      role: 'admin',
+    });
+    onDone();
+  };
+
+  if (found) {
+    return (
+      <View style={s.stepWrap}>
+        <Text style={s.stepTitle}>配對確認</Text>
+        <View style={s.confirmCard}>
+          <Text style={s.confirmIcon}>👴</Text>
+          <Text style={s.confirmName}>{found.name}</Text>
+          <Text style={s.confirmAge}>{found.age} 歲</Text>
+        </View>
+        <Text style={s.stepHint}>請確認這是正確的長輩資料</Text>
+        <TouchableOpacity
+          style={[s.primaryBtn, {backgroundColor: C.family}]}
+          onPress={handleConfirm}>
+          <Text style={s.primaryBtnText}>確認，開始使用</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={s.skipBtn} onPress={() => {setFound(null); setCode('');}}>
+          <Text style={s.skipBtnText}>不是，重新配對</Text>
+        </TouchableOpacity>
+      </View>
+    );
+  }
+
+  if (mode === 'scan') {
+    return (
+      <View style={{flex: 1}}>
+        <FamilyQRScanner
+          onFound={c => handleVerify(c)}
+          onClose={() => setMode('input')}
+        />
+      </View>
+    );
+  }
 
   return (
     <KeyboardAvoidingView
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
       style={s.stepWrap}>
-      <Text style={s.stepTitle}>長輩的基本資料</Text>
-      <Text style={s.stepHint}>請輸入長輩的姓名與年齡，系統將為您產生配對碼</Text>
+      <CodeBadge label="長輩配對碼・6 位數" color={C.family} bg="#E9F0E5" />
+      <Text style={s.stepTitle}>輸入長輩配對碼</Text>
+      <Text style={s.stepHint}>
+        請輸入長輩手機上顯示的 6 位數配對碼，或掃描 QR Code
+      </Text>
 
-      <Text style={s.label}>長輩姓名</Text>
       <TextInput
-        style={s.input}
-        value={name}
-        onChangeText={setName}
-        placeholder="例如：王爺爺"
-        placeholderTextColor={C.sub}
-        returnKeyType="next"
-        accessibilityLabel="長輩姓名"
-      />
-
-      <Text style={s.label}>長輩年齡</Text>
-      <TextInput
-        style={s.input}
-        value={ageText}
-        onChangeText={setAgeText}
-        placeholder="例如：78"
+        style={[s.input, s.codeInput]}
+        value={code}
+        onChangeText={t => setCode(t.replace(/\D/g, '').slice(0, 6))}
+        placeholder="000000"
         placeholderTextColor={C.sub}
         keyboardType="number-pad"
+        maxLength={6}
         returnKeyType="done"
-        accessibilityLabel="長輩年齡"
+        onSubmitEditing={() => {if (code.length === 6) {handleVerify(code);}}}
+        accessibilityLabel="配對碼"
       />
 
       <TouchableOpacity
-        style={[s.primaryBtn, {backgroundColor: C.family, opacity: loading ? 0.6 : 1}]}
-        onPress={handleNext}
-        disabled={loading}>
-        <Text style={s.primaryBtnText}>{loading ? '產生配對碼中...' : '下一步'}</Text>
+        style={[s.primaryBtn, {backgroundColor: C.family, opacity: loading || code.length !== 6 ? 0.55 : 1}]}
+        onPress={() => handleVerify(code)}
+        disabled={loading || code.length !== 6}>
+        <Text style={s.primaryBtnText}>{loading ? '配對中...' : '確認配對'}</Text>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[s.outlineBtn, {borderColor: C.family, marginTop: 12}]}
+        onPress={() => setMode('scan')}>
+        <Text style={[s.outlineBtnText, {color: C.family}]}>📷 掃描 QR Code</Text>
       </TouchableOpacity>
     </KeyboardAvoidingView>
   );
 }
 
-// ─── Step 5b-A: Family shows QR code for elder to scan ───────────────────────
-function FamilyCodeDisplayStep({
-  familyName,
-  elderProfile,
-  onDone,
-}: {
-  familyName: string;
-  elderProfile: ElderProfile;
-  onDone: () => void;
-}) {
-  const [currentCode, setCurrentCode] = useState(elderProfile.pairCode);
-  const [codeCreatedAt, setCodeCreatedAt] = useState(Date.now());
-  const [saved, setSaved] = useState(false);
-  const [regenerating, setRegenerating] = useState(false);
-
-  useEffect(() => {
-    // Sync createdAt from the record saved during code generation
-    getElderPairCodeRecord().then(r => { if (r) setCodeCreatedAt(r.createdAt); });
-
-    async function savePair() {
-      const now = new Date().toISOString();
-      await addPairedElder({
-        pairCode: elderProfile.pairCode,
-        name: elderProfile.name,
-        age: elderProfile.age,
-        pairedAt: now,
-      });
-      const fp = await getFamilyProfile();
-      await addFamilyMember({
-        name: familyName,
-        pairedAt: now,
-        familyId: fp?.familyId,
-        role: 'admin',
-      });
-      setSaved(true);
-    }
-    savePair();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const qrData = JSON.stringify({code: currentCode, elderName: elderProfile.name});
-
-  const hoursLeft = Math.max(
-    0,
-    Math.ceil((codeCreatedAt + 48 * 3_600_000 - Date.now()) / 3_600_000),
-  );
-
-  const handleRegenerate = async () => {
-    if (!saved || regenerating) return;
-    setRegenerating(true);
-    try {
-      const newCode = await generatePairCode();
-      await updateElderPairCode(currentCode, newCode);
-      setCurrentCode(newCode);
-      setCodeCreatedAt(Date.now());
-    } finally {
-      setRegenerating(false);
-    }
-  };
-
-  const handleCopy = () => {
-    Clipboard.setString(currentCode);
-    Alert.alert('已複製', '配對碼已複製到剪貼簿');
-  };
-
-  const handleShare = async () => {
-    try {
-      await Share.share({
-        message: `請在長輩手機打開默伴守護 APP，輸入配對碼：${currentCode}`,
-      });
-    } catch {}
-  };
-
-  return (
-    <View style={s.stepWrap}>
-      <CodeBadge label="長輩配對碼・6 位數" color={C.family} bg="#E9F0E5" />
-      <Text style={s.stepTitle}>請長輩掃描</Text>
-      <Text style={s.stepHint}>
-        請在長輩手機上打開默伴守護，掃描此 QR Code 或輸入下方長輩配對碼
-      </Text>
-
-      <View style={[s.highlightBox, hoursLeft < 12 && {borderColor: '#C0392B'}]}>
-        <Text style={[s.highlightText, hoursLeft < 12 && {color: '#C0392B'}]}>
-          {hoursLeft > 0
-            ? `有效期限：剩餘 ${hoursLeft} 小時`
-            : '配對碼已過期，請重新產生'}
-        </Text>
-      </View>
-
-      <View style={s.qrCard}>
-        <QRCode value={qrData} size={220} color={C.family} backgroundColor={C.washi} />
-      </View>
-
-      <View style={s.backupCodeRow}>
-        <Text style={s.backupCodeLabel}>長輩配對碼</Text>
-        <Text style={[s.backupCodeValue, {color: C.family}]}>{currentCode}</Text>
-      </View>
-
-      <View style={s.actionRow}>
-        <TouchableOpacity style={[s.halfBtn, {borderColor: C.family}]} onPress={handleCopy}>
-          <Text style={[s.halfBtnText, {color: C.family}]}>📋 複製配對碼</Text>
-        </TouchableOpacity>
-        <TouchableOpacity style={[s.halfBtn, {borderColor: C.family}]} onPress={handleShare}>
-          <Text style={[s.halfBtnText, {color: C.family}]}>📤 分享</Text>
-        </TouchableOpacity>
-      </View>
-
-      <TouchableOpacity
-        style={[
-          s.outlineBtn,
-          {borderColor: C.orange, marginBottom: 8},
-          (!saved || regenerating) && {opacity: 0.5},
-        ]}
-        onPress={handleRegenerate}
-        disabled={!saved || regenerating}>
-        <Text style={[s.outlineBtnText, {color: C.orange}]}>
-          {regenerating ? '產生中...' : '🔄 重新產生配對碼'}
-        </Text>
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        style={[s.primaryBtn, {backgroundColor: C.family, opacity: saved ? 1 : 0.55}]}
-        onPress={onDone}
-        disabled={!saved}>
-        <Text style={s.primaryBtnText}>長輩已完成設定</Text>
-      </TouchableOpacity>
-    </View>
-  );
-}
-
-// ─── Step 4b-B: Join existing family via invite code ─────────────────────────
+// ─── Step 4b: Join existing family via invite code ────────────────────────────
 function FamilyJoinStep({familyName, onDone}: {familyName: string; onDone: () => void}) {
   const [code, setCode] = useState('');
   const [loading, setLoading] = useState(false);
@@ -656,56 +681,77 @@ function FamilyJoinStep({familyName, onDone}: {familyName: string; onDone: () =>
   );
 }
 
+// ─── Step 3b choice ───────────────────────────────────────────────────────────
+function FamilyChoiceStep({
+  onPrimary,
+  onJoin,
+}: {
+  onPrimary: () => void;
+  onJoin: () => void;
+}) {
+  return (
+    <View style={s.stepWrap}>
+      <Text style={s.stepTitle}>如何使用？</Text>
+      <Text style={s.stepHint}>請選擇您的加入方式</Text>
+
+      <TouchableOpacity
+        style={[s.roleBtn, {backgroundColor: C.family}]}
+        onPress={onPrimary}
+        accessibilityRole="button">
+        <Text style={s.roleBtnIcon}>📱</Text>
+        <View style={s.roleBtnInfo}>
+          <Text style={s.roleBtnLabel}>配對長輩手機</Text>
+          <Text style={s.roleBtnSub}>輸入長輩手機顯示的配對碼</Text>
+        </View>
+      </TouchableOpacity>
+
+      <TouchableOpacity
+        style={[s.roleBtn, {backgroundColor: '#7C6FA0'}]}
+        onPress={onJoin}
+        accessibilityRole="button">
+        <Text style={s.roleBtnIcon}>👥</Text>
+        <View style={s.roleBtnInfo}>
+          <Text style={s.roleBtnLabel}>加入現有家庭</Text>
+          <Text style={s.roleBtnSub}>輸入管理員家屬的邀請碼（8 位數）</Text>
+        </View>
+      </TouchableOpacity>
+    </View>
+  );
+}
+
 // ─── Orchestrator ─────────────────────────────────────────────────────────────
 
 type Step =
   | {type: 'role'}
-  | {type: 'elder_scan'}
-  | {type: 'family_name'}
+  | {type: 'elder_info'}
+  | {type: 'elder_code'; elderName: string; elderAge: number}
+  | {type: 'family_login'}
+  | {type: 'family_name'; googleName?: string}
   | {type: 'family_choice'; familyName: string}
-  | {type: 'family_elder_info'; familyName: string}
-  | {type: 'family_code_display'; familyName: string; elderProfile: ElderProfile}
+  | {type: 'family_scan'; familyName: string}
   | {type: 'family_join'; familyName: string};
 
 export default function OnboardingScreen({onComplete}: {onComplete: () => void}) {
   const [step, setStep] = useState<Step>({type: 'role'});
 
   const handleRoleSelect = (role: AppRole) => {
-    setStep(role === 'elder' ? {type: 'elder_scan'} : {type: 'family_name'});
+    setStep(role === 'elder' ? {type: 'elder_info'} : {type: 'family_login'});
   };
 
-  const handleFamilyName = (name: string) => {
-    setStep({type: 'family_choice', familyName: name});
-  };
-
-  const handleFamilyChoicePrimary = async (familyName: string) => {
-    await setAppRole('family');
-    await setFamilyProfile({name: familyName, role: 'admin'});
-    setStep({type: 'family_elder_info', familyName});
-  };
-
-  const handleFamilyChoiceJoin = (familyName: string) => {
-    setStep({type: 'family_join', familyName});
-  };
-
-  const handleFamilyElderInfo = (familyName: string, profile: ElderProfile) => {
-    setStep({type: 'family_code_display', familyName, elderProfile: profile});
-  };
-
-  // Progress dots (family path only: 4 dots)
   const progressTotal = step.type.startsWith('family') ? 4 : 0;
   const progressDone =
-    !step.type.startsWith('family')              ? 0 :
-    step.type === 'family_name'                  ? 1 :
-    step.type === 'family_choice'                ? 2 :
-    (step.type === 'family_elder_info' ||
-     step.type === 'family_join')                ? 3 :
-    step.type === 'family_code_display'          ? 4 : 0;
+    !step.type.startsWith('family')     ? 0 :
+    step.type === 'family_login'        ? 1 :
+    step.type === 'family_name'         ? 2 :
+    step.type === 'family_choice'       ? 3 :
+    (step.type === 'family_scan' ||
+     step.type === 'family_join')       ? 4 : 0;
+
+  const isFullScreen = step.type === 'family_scan';
 
   return (
     <View style={s.root}>
-      {/* Progress bar (hidden during elder scan — no dots needed) */}
-      {step.type !== 'elder_scan' && (
+      {!isFullScreen && (
         <View style={s.topBar}>
           <View style={s.progressRow}>
             {progressTotal > 0 &&
@@ -719,13 +765,14 @@ export default function OnboardingScreen({onComplete}: {onComplete: () => void})
         </View>
       )}
 
-      {/* Elder scan — rendered outside ScrollView for full-screen scanner */}
-      {step.type === 'elder_scan' && (
-        <ElderScanStep onDone={onComplete} />
+      {isFullScreen && step.type === 'family_scan' && (
+        <FamilyScanStep
+          familyName={step.familyName}
+          onDone={onComplete}
+        />
       )}
 
-      {/* All family + role steps inside ScrollView */}
-      {step.type !== 'elder_scan' && (
+      {!isFullScreen && (
         <ScrollView
           style={s.scroll}
           contentContainerStyle={s.scrollContent}
@@ -733,25 +780,33 @@ export default function OnboardingScreen({onComplete}: {onComplete: () => void})
           {step.type === 'role' && (
             <RoleStep onSelect={handleRoleSelect} />
           )}
+          {step.type === 'elder_info' && (
+            <ElderInfoStep
+              onNext={(name, age) => setStep({type: 'elder_code', elderName: name, elderAge: age})}
+            />
+          )}
+          {step.type === 'elder_code' && (
+            <ElderCodeDisplayStep
+              elderName={step.elderName}
+              elderAge={step.elderAge}
+              onDone={onComplete}
+            />
+          )}
+          {step.type === 'family_login' && (
+            <FamilyLoginStep
+              onNext={googleName => setStep({type: 'family_name', googleName})}
+            />
+          )}
           {step.type === 'family_name' && (
-            <FamilyNameStep onNext={handleFamilyName} />
+            <FamilyNameStep
+              initialName={step.googleName}
+              onNext={name => setStep({type: 'family_choice', familyName: name})}
+            />
           )}
           {step.type === 'family_choice' && (
             <FamilyChoiceStep
-              onPrimary={() => handleFamilyChoicePrimary(step.familyName)}
-              onJoin={() => handleFamilyChoiceJoin(step.familyName)}
-            />
-          )}
-          {step.type === 'family_elder_info' && (
-            <FamilyElderInfoStep
-              onNext={profile => handleFamilyElderInfo(step.familyName, profile)}
-            />
-          )}
-          {step.type === 'family_code_display' && (
-            <FamilyCodeDisplayStep
-              familyName={step.familyName}
-              elderProfile={step.elderProfile}
-              onDone={onComplete}
+              onPrimary={() => setStep({type: 'family_scan', familyName: step.familyName})}
+              onJoin={() => setStep({type: 'family_join', familyName: step.familyName})}
             />
           )}
           {step.type === 'family_join' && (
@@ -766,7 +821,6 @@ export default function OnboardingScreen({onComplete}: {onComplete: () => void})
 // ─── Styles ───────────────────────────────────────────────────────────────────
 const s = StyleSheet.create({
   root: {flex: 1, backgroundColor: C.bg},
-
   topBar: {
     backgroundColor: C.bg,
     paddingHorizontal: 20,
@@ -780,12 +834,35 @@ const s = StyleSheet.create({
   progressRow: {flexDirection: 'row', gap: 8, alignItems: 'center'},
   dot: {width: 10, height: 10, borderRadius: 5},
   dotPending: {backgroundColor: C.border},
-
+  googleBtn: {
+    width: '100%',
+    backgroundColor: C.white,
+    borderRadius: 12,
+    paddingVertical: 16,
+    marginTop: 24,
+    marginBottom: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  gIcon: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: C.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 12,
+    borderWidth: 1,
+    borderColor: C.border,
+  },
+  gIconText: {color: '#4285F4', fontSize: 17, fontWeight: '900'},
+  googleBtnText: {color: C.ink, fontSize: F.body, fontWeight: 'bold'},
   scroll: {flex: 1},
   scrollContent: {flexGrow: 1},
   stepWrap: {flex: 1, padding: 24, paddingTop: 44},
-
-  // ── Hero (role step) ──
   heroRow: {flexDirection: 'row', alignItems: 'center', gap: 16, marginBottom: 16},
   logoCircle: {
     backgroundColor: C.elder, alignItems: 'center', justifyContent: 'center',
@@ -797,17 +874,12 @@ const s = StyleSheet.create({
   heroTextBlock: {flex: 1},
   heroTitle: {fontSize: F.xl, fontWeight: '800', color: C.ink, letterSpacing: 3},
   heroSub: {fontSize: F.xs, color: C.sub, letterSpacing: 0.5, marginTop: 4},
-
-  // ── Help box ──
   helpBox: {
     backgroundColor: C.washi, borderWidth: 1.5, borderColor: C.border,
     borderRadius: 12, paddingVertical: 12, paddingHorizontal: 16, marginBottom: 16,
   },
   helpText: {fontSize: F.sm, color: C.sub, lineHeight: 26, textAlign: 'center'},
-
   warningText: {fontSize: F.xs, color: C.sub, lineHeight: 20, marginBottom: 20, textAlign: 'center'},
-
-  // ── Role / choice buttons ──
   roleBtn: {
     flexDirection: 'row', alignItems: 'center', borderRadius: 18,
     padding: 22, marginBottom: 16, minHeight: 88,
@@ -818,20 +890,13 @@ const s = StyleSheet.create({
   roleBtnInfo: {flex: 1},
   roleBtnLabel: {fontSize: F.md, fontWeight: '700', color: C.white, marginBottom: 4},
   roleBtnSub: {fontSize: F.sm, color: 'rgba(255,255,255,0.78)'},
-  choiceNote: {fontSize: F.xs, color: C.sub, lineHeight: 22, marginTop: 8, paddingHorizontal: 4},
-
-  // ── Code type badge ──
   codeBadge: {
     borderRadius: 20, paddingVertical: 5, paddingHorizontal: 14,
     marginBottom: 12, alignSelf: 'flex-start',
   },
   codeBadgeText: {fontSize: F.xs, fontWeight: '700', letterSpacing: 0.5},
-
-  // ── Step headers ──
   stepTitle: {fontSize: F.lg, fontWeight: '800', color: C.ink, marginBottom: 8},
   stepHint: {fontSize: F.sm, color: C.sub, lineHeight: 26, marginBottom: 28},
-
-  // ── Form ──
   label: {
     fontSize: F.xs, fontWeight: '700', color: C.sub, marginBottom: 8,
     textTransform: 'uppercase', letterSpacing: 0.5,
@@ -845,15 +910,11 @@ const s = StyleSheet.create({
     fontSize: F.xl, fontWeight: '800', letterSpacing: 10,
     textAlign: 'center', minHeight: 72,
   },
-
-  // ── Highlight box ──
   highlightBox: {
     borderWidth: 1.5, borderColor: C.orange, backgroundColor: C.washi,
     borderRadius: 10, paddingVertical: 10, paddingHorizontal: 14, marginBottom: 20,
   },
   highlightText: {fontSize: F.xs, color: C.orange, textAlign: 'center', fontWeight: '600'},
-
-  // ── Buttons ──
   primaryBtn: {
     borderRadius: 16, paddingVertical: 20, alignItems: 'center',
     justifyContent: 'center', marginTop: 8, minHeight: 64,
@@ -868,15 +929,12 @@ const s = StyleSheet.create({
   outlineBtnText: {fontSize: F.sm, fontWeight: '700'},
   skipBtn: {paddingVertical: 16, alignItems: 'center', minHeight: 48, marginTop: 8},
   skipBtnText: {color: C.sub, fontSize: F.sm, textDecorationLine: 'underline'},
-
   actionRow: {flexDirection: 'row', gap: 12, marginBottom: 16},
   halfBtn: {
     flex: 1, borderRadius: 14, paddingVertical: 16, alignItems: 'center',
     justifyContent: 'center', minHeight: 54, borderWidth: 2,
   },
   halfBtnText: {fontSize: F.sm, fontWeight: '700'},
-
-  // ── QR code display ──
   qrCard: {
     backgroundColor: C.washi, borderRadius: 20, padding: 24,
     alignItems: 'center', marginBottom: 16,
@@ -891,20 +949,14 @@ const s = StyleSheet.create({
   },
   backupCodeLabel: {fontSize: F.xs, color: C.sub, fontWeight: '600', letterSpacing: 0.5},
   backupCodeValue: {fontSize: F.xl, fontWeight: '900', letterSpacing: 6},
-
-  // ── Elder confirm card ──
   confirmCard: {
     backgroundColor: C.washi, borderRadius: 20, padding: 28,
     alignItems: 'center', marginBottom: 24,
     borderWidth: 1.5, borderColor: C.border,
-    shadowColor: '#000', shadowOffset: {width: 0, height: 2},
-    shadowOpacity: 0.07, shadowRadius: 8, elevation: 3,
   },
   confirmIcon: {fontSize: 56, marginBottom: 12},
   confirmName: {fontSize: F.lg, fontWeight: '800', color: C.ink, marginBottom: 4},
   confirmAge: {fontSize: F.body, color: C.sub},
-
-  // ── QR scanner overlay ──
   scanCenter: {
     flex: 1, alignItems: 'center', justifyContent: 'center', backgroundColor: '#111',
   },
@@ -912,12 +964,13 @@ const s = StyleSheet.create({
   overlay: {position: 'absolute', left: 0, right: 0, backgroundColor: 'rgba(0,0,0,0.65)'},
   scanBox: {position: 'absolute', alignSelf: 'center', top: '30%'},
   corner: {position: 'absolute', width: 28, height: 28},
-  cornerTL: {top: 0, left: 0, borderTopWidth: 3, borderLeftWidth: 3, borderColor: C.elder},
-  cornerTR: {top: 0, right: 0, borderTopWidth: 3, borderRightWidth: 3, borderColor: C.elder},
-  cornerBL: {bottom: 0, left: 0, borderBottomWidth: 3, borderLeftWidth: 3, borderColor: C.elder},
-  cornerBR: {bottom: 0, right: 0, borderBottomWidth: 3, borderRightWidth: 3, borderColor: C.elder},
+  cornerTL: {top: 0, left: 0, borderTopWidth: 3, borderLeftWidth: 3, borderColor: C.family},
+  cornerTR: {top: 0, right: 0, borderTopWidth: 3, borderRightWidth: 3, borderColor: C.family},
+  cornerBL: {bottom: 0, left: 0, borderBottomWidth: 3, borderLeftWidth: 3, borderColor: C.family},
+  cornerBR: {bottom: 0, right: 0, borderBottomWidth: 3, borderRightWidth: 3, borderColor: C.family},
   scanInstruction: {
-    position: 'absolute', bottom: 80, left: 0, right: 0, alignItems: 'center', paddingHorizontal: 32,
+    position: 'absolute', bottom: 80, left: 0, right: 0,
+    alignItems: 'center', paddingHorizontal: 32,
   },
   scanInstructionText: {
     color: C.white, fontSize: F.sm, fontWeight: '600', textAlign: 'center',

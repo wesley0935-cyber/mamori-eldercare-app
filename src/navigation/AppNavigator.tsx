@@ -71,7 +71,7 @@ export default function AppNavigator() {
       const guideShown = await AsyncStorage.getItem(PERMISSION_GUIDE_KEY);
       if (role === null) {
         setAppRoleState('onboarding');
-      } else if (!guideShown) {
+      } else if (!guideShown && role !== 'family') {
         setPendingRole(role);
         setShowPermGuide(true);
       } else {
@@ -84,6 +84,14 @@ export default function AppNavigator() {
   const handleOnboardingComplete = async () => {
     const role = await getAppRole();
     if (!role) {return;}
+    // 家屬端配對完成後直接進入主畫面，不強制顯示權限引導
+    // onboarding 期間已完成 Google 登入，重讀 familyToken 讓其直接進儀表板
+    if (role === 'family') {
+      const token = await AsyncStorage.getItem('familyToken');
+      setFamilyToken(token);
+      setAppRoleState(role);
+      return;
+    }
     const guideShown = await AsyncStorage.getItem(PERMISSION_GUIDE_KEY);
     if (!guideShown) {
       setPendingRole(role);
@@ -105,6 +113,16 @@ export default function AppNavigator() {
     setAppRoleState('onboarding');
   };
 
+  const logoutFamily = () => {
+    setFamilyToken(null);
+    if (navReady.current && navRef.current) {
+      navRef.current.reset({
+        index: 0,
+        routes: [{name: 'FamilyLogin'}],
+      });
+    }
+  };
+
   const showPermissionGuide = async () => {
     await AsyncStorage.removeItem(PERMISSION_GUIDE_KEY);
     const currentRole = appRole && appRole !== 'onboarding' ? (appRole as AppRole) : pendingRole;
@@ -116,7 +134,7 @@ export default function AppNavigator() {
 
   if (showPermGuide) {
     return (
-      <AppContext.Provider value={{resetApp, showPermissionGuide}}>
+      <AppContext.Provider value={{resetApp, showPermissionGuide, logoutFamily}}>
         <GestureHandlerRootView style={s.gestureRoot}>
           <SafeAreaProvider>
             <PermissionGuideScreen onComplete={handlePermGuideComplete} />
@@ -128,7 +146,7 @@ export default function AppNavigator() {
 
   if (appRole === 'onboarding') {
     return (
-      <AppContext.Provider value={{resetApp, showPermissionGuide}}>
+      <AppContext.Provider value={{resetApp, showPermissionGuide, logoutFamily}}>
         <GestureHandlerRootView style={s.gestureRoot}>
           <SafeAreaProvider>
             <StatusBar barStyle="dark-content" backgroundColor={C.headerStart} />
@@ -150,7 +168,7 @@ export default function AppNavigator() {
   };
 
   return (
-    <AppContext.Provider value={{resetApp, showPermissionGuide}}>
+    <AppContext.Provider value={{resetApp, showPermissionGuide, logoutFamily}}>
       <GestureHandlerRootView style={s.gestureRoot}>
         <SafeAreaProvider>
           <StatusBar barStyle="dark-content" backgroundColor={C.headerStart} />
