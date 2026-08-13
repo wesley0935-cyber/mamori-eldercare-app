@@ -1,4 +1,10 @@
 {
   "name": "ElderCareApp",
-  "displayName": "ElderCareApp"
+  "displayName": "ElderCareApp",
+  "slug": "mamori-eldercare",
+  "extra": {
+    "eas": {
+      "projectId": "e208684a-c262-47ae-aff7-ec19ee53e0c7"
+    }
+  }
 }
