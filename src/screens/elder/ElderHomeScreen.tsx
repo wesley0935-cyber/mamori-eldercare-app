@@ -14,7 +14,7 @@ import {
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import {useBatteryLevel} from 'react-native-device-info';
-import {startStepListener, readLastNightSleep, readTodayStepsOnce} from '../../services/HealthService';
+import {startStepListener, readLastNightSleep, readTodayStepsOnce, requestHealthPermissions} from '../../services/HealthService';
 import {uploadStepData} from '../../api/stepsApi';
 import {startBatteryMonitor} from '../../services/BatteryService';
 import {
@@ -953,10 +953,17 @@ export default function ElderHomeScreen() {
   }, []);
 
   useEffect(() => {
+    console.log('[ElderHome] useEffect for startStepListener mounted');
     let stop: (() => void) | null = null;
     startStepListener((s, mock) => {
+      console.log('[ElderHome] step callback received:', s, mock);
       setSteps(s); setIsMock(mock); notifyStepsUpdated(s);
-    }).then(r => { stop = r.stop; });
+    }).then(r => {
+      console.log('[ElderHome] startStepListener resolved');
+      stop = r.stop;
+    }).catch(e => {
+      console.log('[ElderHome] startStepListener REJECTED:', e);
+    });
     return () => stop?.();
   }, []);
 
@@ -965,18 +972,32 @@ export default function ElderHomeScreen() {
     readLastNightSleep().then(setSleepHours);
   }, []);
 
-  // 步數與睡眠都就緒，且為真實數據（非 mock）時才上傳後端
-  // sleepHours=null 表示 Health Connect 不可用，不上傳
+  // 步數就緒且為真實數據（非 mock）時上傳後端
+  // sleepHours=null 表示 Health Connect 不可用，以 0 代替仍然上傳步數
   // isMock=true 表示步數為模擬值，不上傳
   useEffect(() => {
-    if (steps === null || sleepHours === null || isMock) { return; }
+    if (steps === null || isMock) { return; }
     AsyncStorage.getItem('deviceId').then(deviceId => {
       if (!deviceId) { return; }
       const today = new Date().toISOString().slice(0, 10);
-      uploadStepData(deviceId, today, steps, sleepHours).catch(e =>
-        console.warn('[ElderHome] uploadStepData failed:', e),
-      );
+      uploadStepData(deviceId, today, steps, sleepHours ?? 0)
+        .then(result => console.log('[ElderHome] uploadStepData result:', JSON.stringify(result)))
+        .catch(e => console.warn('[ElderHome] uploadStepData failed:', e));
     });
+  }, [steps, sleepHours, isMock]);
+
+  // 每 5 分鐘定時上傳步數到後端（確保後端資料持續更新）
+  useEffect(() => {
+    const id = setInterval(async () => {
+      if (steps === null || isMock) { return; }
+      const deviceId = await AsyncStorage.getItem('deviceId');
+      if (!deviceId) { return; }
+      const today = new Date().toISOString().slice(0, 10);
+      uploadStepData(deviceId, today, steps, sleepHours ?? 0)
+        .then(result => console.log('[ElderHome] periodic uploadStepData result:', JSON.stringify(result)))
+        .catch(e => console.warn('[ElderHome] periodic uploadStepData failed:', e));
+    }, 5 * 60_000);
+    return () => clearInterval(id);
   }, [steps, sleepHours, isMock]);
 
   useEffect(() => {
@@ -996,6 +1017,14 @@ export default function ElderHomeScreen() {
     getFamilyMembers().then(setFamilyMembers);
     getThresholdSettings().then(t => setStepGoal(t.stepGoal));
     getEmergencyContacts().then(setEmergencyContacts);
+  }, []);
+
+  // 每 30 秒自動刷新緊急聯絡人（讓家屬新增/刪除後長輩端不需重開 APP）
+  useEffect(() => {
+    const id = setInterval(() => {
+      getEmergencyContacts().then(setEmergencyContacts);
+    }, 30_000);
+    return () => clearInterval(id);
   }, []);
 
   useEffect(() => {
@@ -1021,9 +1050,25 @@ export default function ElderHomeScreen() {
     }, []),
   );
 
+  // 每 30 秒自動刷新藥物資料（讓家屬新增後長輩端不需重開 APP）
+  useEffect(() => {
+    const refreshMeds = () => {
+      getElderProfile().then(p => {
+        const elderId = p?.pairCode ?? 'default';
+        getMedications(elderId).then(loadedMeds => {
+          setMeds(loadedMeds);
+          return getEffectiveTakenState(loadedMeds, elderId);
+        }).then(setTakenState);
+      });
+    };
+    const id = setInterval(refreshMeds, 30_000);
+    return () => clearInterval(id);
+  }, []);
+
   // 每次進入畫面立即重新讀取步數（Health Connect 可用時），不依賴 60 秒輪詢
   useFocusEffect(
     useCallback(() => {
+      requestHealthPermissions().catch(() => {});
       readTodayStepsOnce().then(s => {
         if (s !== null) {
           setSteps(s);
@@ -1065,8 +1110,9 @@ export default function ElderHomeScreen() {
 
     await sendFallDetectedImmediate(elderName, time);
 
-    const loc = await (fallLocRef.current?.promise ?? startCurrentLocation(10_000).promise);
+    const fallHandle = fallLocRef.current ?? startCurrentLocation(15_000);
     fallLocRef.current = null;
+    const loc = await fallHandle.promise;
 
     if (loc) {
       await sendFallDetectedWithLocation(elderName, loc.latitude, loc.longitude, loc.accuracy);
@@ -1143,12 +1189,10 @@ export default function ElderHomeScreen() {
     await sendSOSImmediate(elderName, time);
     setSosStatus('locating');
 
-    // 等待 GPS，上限 8 秒（GPS 從長按 SOS 時已開始，通常剩餘等待時間短）
-    const locHandle = locRef.current ?? startCurrentLocation(10_000);
+    // 等待 GPS（GPS 從長按 SOS 時已開始，通常剩餘等待時間短）
+    const locHandle = locRef.current ?? startCurrentLocation(15_000);
     locRef.current = null;
-    const gpsTimeout = new Promise<null>(resolve => setTimeout(() => resolve(null), 8_000));
-    const loc = await Promise.race([locHandle.promise, gpsTimeout]);
-    locHandle.cancel();
+    const loc = await locHandle.promise;
 
     // 第二則推播：含 GPS 連結或無法取得位置
     if (loc) {

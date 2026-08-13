@@ -124,56 +124,58 @@ function MedModal({visible, initial, onSave, onCancel}: MedModalProps) {
   return (
     <Modal visible={visible} transparent animationType="slide">
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.modalOverlay}>
         <View style={styles.modalCard}>
-          <Text style={styles.modalTitle}>{initial ? '編輯藥物' : '新增藥物'}</Text>
+          <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+            <Text style={styles.modalTitle}>{initial ? '編輯藥物' : '新增藥物'}</Text>
 
-          <Text style={styles.fieldLabel}>藥名 *</Text>
-          <TextInput
-            style={styles.textInput}
-            value={draft.name}
-            onChangeText={v => set('name', v)}
-            placeholder="例：血壓藥"
-            placeholderTextColor={COLORS.textSecondary}
-            maxLength={30}
-          />
+            <Text style={styles.fieldLabel}>藥名 *</Text>
+            <TextInput
+              style={styles.textInput}
+              value={draft.name}
+              onChangeText={v => set('name', v)}
+              placeholder="例：血壓藥"
+              placeholderTextColor={COLORS.textSecondary}
+              maxLength={30}
+            />
 
-          <Text style={styles.fieldLabel}>服用時間</Text>
-          <TimePicker value={draft.time} onChange={v => set('time', v)} />
+            <Text style={styles.fieldLabel}>服用時間</Text>
+            <TimePicker value={draft.time} onChange={v => set('time', v)} />
 
-          <Text style={styles.fieldLabel}>服用時段</Text>
-          <View style={styles.periodRow}>
-            {PERIODS.map(p => (
-              <TouchableOpacity
-                key={p.key}
-                style={[styles.periodBtn, draft.period === p.key && styles.periodBtnActive]}
-                onPress={() => set('period', p.key)}>
-                <Text style={[styles.periodBtnText, draft.period === p.key && styles.periodBtnTextActive]}>
-                  {p.label}
-                </Text>
+            <Text style={styles.fieldLabel}>服用時段</Text>
+            <View style={styles.periodRow}>
+              {PERIODS.map(p => (
+                <TouchableOpacity
+                  key={p.key}
+                  style={[styles.periodBtn, draft.period === p.key && styles.periodBtnActive]}
+                  onPress={() => set('period', p.key)}>
+                  <Text style={[styles.periodBtnText, draft.period === p.key && styles.periodBtnTextActive]}>
+                    {p.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+            </View>
+
+            <Text style={styles.fieldLabel}>備註</Text>
+            <TextInput
+              style={styles.textInput}
+              value={draft.note}
+              onChangeText={v => set('note', v)}
+              placeholder="例：早餐後（選填）"
+              placeholderTextColor={COLORS.textSecondary}
+              maxLength={40}
+            />
+
+            <View style={styles.modalBtns}>
+              <TouchableOpacity style={styles.cancelBtn} onPress={onCancel}>
+                <Text style={styles.cancelBtnText}>取消</Text>
               </TouchableOpacity>
-            ))}
-          </View>
-
-          <Text style={styles.fieldLabel}>備註</Text>
-          <TextInput
-            style={styles.textInput}
-            value={draft.note}
-            onChangeText={v => set('note', v)}
-            placeholder="例：早餐後（選填）"
-            placeholderTextColor={COLORS.textSecondary}
-            maxLength={40}
-          />
-
-          <View style={styles.modalBtns}>
-            <TouchableOpacity style={styles.cancelBtn} onPress={onCancel}>
-              <Text style={styles.cancelBtnText}>取消</Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
-              <Text style={styles.saveBtnText}>儲存</Text>
-            </TouchableOpacity>
-          </View>
+              <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
+                <Text style={styles.saveBtnText}>儲存</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
         </View>
       </KeyboardAvoidingView>
     </Modal>

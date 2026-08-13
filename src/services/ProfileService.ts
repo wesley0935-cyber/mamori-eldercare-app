@@ -8,6 +8,7 @@ export interface ElderProfile {
   name: string;
   age: number;
   pairCode: string;
+  elderId?: string;
 }
 
 export interface ElderPairCodeRecord {
@@ -39,6 +40,7 @@ export interface PairedElder {
   name: string;
   age: number;
   pairedAt: string;
+  elderId?: string;  // 後端 Elder UUID，用於步數趨勢 API 查詢
 }
 
 export interface FamilyMember {
@@ -60,7 +62,7 @@ const PAIR_CODE_EXPIRY_MS = 48 * 60 * 60 * 1000; // 48 hours
 
 let _cachedElderName: string | null = null;
 
-// ─── Pair code ────────────────────────────────────────────────────────────────
+// ── Pair code ────────────────────────────────────────────────────────────────
 
 export async function generatePairCode(): Promise<string> {
   try {
@@ -85,7 +87,6 @@ export async function getElderPairCodeRecord(): Promise<ElderPairCodeRecord | nu
   }
 }
 
-// ── 修改1：加入 params 參數，傳 elderName/elderAge/deviceId 給後端 ──
 export async function generateAndSavePairCode(params?: {
   elderName?: string;
   elderAge?: number;
@@ -102,6 +103,14 @@ export async function generateAndSavePairCode(params?: {
       elderAge: params?.elderAge || 0,
       deviceId,
     });
+    // 儲存後端 elderId（供步數趨勢 API 查詢）
+    if (result.elderId != null) {
+      await AsyncStorage.setItem('backendElderId', String(result.elderId));
+    }
+    // 儲存後端 pairingId（配對完成後用於登記家屬 FCM token）
+    if (result.pairingId != null) {
+      await AsyncStorage.setItem('backendPairingId', String(result.pairingId));
+    }
     const record: ElderPairCodeRecord = {
       code: result.code,
       createdAt: Date.now(),
@@ -110,7 +119,7 @@ export async function generateAndSavePairCode(params?: {
     return record;
   } catch (e) {
     const code = await generatePairCode();
-    const record: ElderPairCodeRecord = {code, createdAt: Date.now()};
+    const record: ElderPairCodeRecord = { code, createdAt: Date.now() };
     await AsyncStorage.setItem(KEY_ELDER_PAIR_CODE, JSON.stringify(record));
     return record;
   }
@@ -123,7 +132,7 @@ export function generateFamilyId(): string {
   });
 }
 
-// ─── App role ─────────────────────────────────────────────────────────────────
+// ── App role ─────────────────────────────────────────────────────────────────
 
 export async function getAppRole(): Promise<AppRole | null> {
   try {
@@ -138,7 +147,7 @@ export async function setAppRole(role: AppRole): Promise<void> {
   await AsyncStorage.setItem(KEY_ROLE, role);
 }
 
-// ─── Elder profile ────────────────────────────────────────────────────────────
+// ── Elder profile ─────────────────────────────────────────────────────────────
 
 export async function getElderProfile(): Promise<ElderProfile | null> {
   try {
@@ -154,12 +163,12 @@ export async function setElderProfile(profile: ElderProfile): Promise<void> {
   await AsyncStorage.setItem(KEY_ELDER_PROFILE, JSON.stringify(profile));
 }
 
-// ─── Family profile ───────────────────────────────────────────────────────────
+// ── Family profile ────────────────────────────────────────────────────────────
 
 export async function getFamilyProfile(): Promise<FamilyProfile | null> {
   try {
     const raw = await AsyncStorage.getItem(KEY_FAMILY_PROFILE);
-    if (!raw) {return null;}
+    if (!raw) { return null; }
     const profile = JSON.parse(raw) as FamilyProfile;
     if (!profile.familyId) {
       profile.familyId = generateFamilyId();
@@ -174,11 +183,11 @@ export async function getFamilyProfile(): Promise<FamilyProfile | null> {
 export async function setFamilyProfile(profile: FamilyProfile): Promise<void> {
   const withId: FamilyProfile = profile.familyId
     ? profile
-    : {...profile, familyId: generateFamilyId()};
+    : { ...profile, familyId: generateFamilyId() };
   await AsyncStorage.setItem(KEY_FAMILY_PROFILE, JSON.stringify(withId));
 }
 
-// ─── Paired elders (family side) ─────────────────────────────────────────────
+// ── Paired elders (family side) ───────────────────────────────────────────────
 
 export async function getPairedElders(): Promise<PairedElder[]> {
   try {
@@ -207,17 +216,17 @@ export async function removePairedElder(pairCode: string): Promise<PairedElder[]
 export async function updateElderPairCode(oldCode: string, newCode: string): Promise<PairedElder[]> {
   const profile = await getElderProfile();
   if (profile?.pairCode === oldCode) {
-    await setElderProfile({...profile, pairCode: newCode});
+    await setElderProfile({ ...profile, pairCode: newCode });
   }
-  const record: ElderPairCodeRecord = {code: newCode, createdAt: Date.now()};
+  const record: ElderPairCodeRecord = { code: newCode, createdAt: Date.now() };
   await AsyncStorage.setItem(KEY_ELDER_PAIR_CODE, JSON.stringify(record));
   const list = await getPairedElders();
-  const updated = list.map(e => e.pairCode === oldCode ? {...e, pairCode: newCode} : e);
+  const updated = list.map(e => e.pairCode === oldCode ? { ...e, pairCode: newCode } : e);
   await AsyncStorage.setItem(KEY_PAIRED_ELDERS, JSON.stringify(updated));
   return updated;
 }
 
-// ─── Try pair with code (elder side) ─────────────────────────────────────────
+// ── Try pair with code (elder side) ──────────────────────────────────────────
 
 export async function tryPairWithCode(code: string): Promise<TryPairResult> {
   try {
@@ -237,23 +246,23 @@ export async function tryPairWithCode(code: string): Promise<TryPairResult> {
       };
       await setElderProfile(profile);
       await AsyncStorage.setItem('isPaired', 'true');
-      return {status: 'ok', profile};
+      return { status: 'ok', profile };
     }
 
     if (result?.message?.includes('過期') || result?.error?.includes('過期')) {
-      return {status: 'expired'};
+      return { status: 'expired' };
     }
-    return {status: 'invalid'};
+    return { status: 'invalid' };
   } catch (e) {
     const profile = await getElderProfile();
-    if (!profile || profile.pairCode !== code.trim()) { return {status: 'invalid'}; }
+    if (!profile || profile.pairCode !== code.trim()) { return { status: 'invalid' }; }
     const record = await getElderPairCodeRecord();
-    if (record && Date.now() - record.createdAt > PAIR_CODE_EXPIRY_MS) { return {status: 'expired'}; }
-    return {status: 'ok', profile};
+    if (record && Date.now() - record.createdAt > PAIR_CODE_EXPIRY_MS) { return { status: 'expired' }; }
+    return { status: 'ok', profile };
   }
 }
 
-// ── 修改2：新增 confirmPairingWithCode（家屬端用）────────────────────────────
+// ── confirmPairingWithCode（家屬端配對）────────────────────────────────────────
 
 export async function confirmPairingWithCode(code: string): Promise<TryPairResult> {
   try {
@@ -261,34 +270,56 @@ export async function confirmPairingWithCode(code: string): Promise<TryPairResul
     const result = await confirmPairing(code.trim());
 
     if (result?.success) {
+      await AsyncStorage.setItem('backendElderId', String(result.elderId));
+
+      // 儲存 pairingId，供後續更新家屬 FCM token 使用
+      if (result.pairingId != null) {
+        await AsyncStorage.setItem('backendPairingId', String(result.pairingId));
+      }
+
+      // 取得家屬裝置的 FCM token 並向後端登記
+      try {
+        const messaging = require('@react-native-firebase/messaging').default;
+        const { registerFamilyFcmToken } = require('../api/notificationApi');
+        const fcmToken = await messaging().getToken();
+        if (result.pairingId && fcmToken) {
+          await registerFamilyFcmToken(String(result.pairingId), fcmToken);
+          console.log('[ProfileService] 家屬 FCM token 已登記');
+        }
+      } catch (fcmErr) {
+        // FCM 登記失敗不影響配對結果，僅 log 警告
+        console.warn('[ProfileService] 家屬 FCM token 登記失敗:', fcmErr);
+      }
+
       return {
         status: 'ok',
         profile: {
           name: result.elderName || '長輩',
           age: result.elderAge || 0,
           pairCode: code.trim(),
+          elderId: String(result.elderId),
         },
       };
     }
     if (result?.message?.includes('過期') || result?.error?.includes('過期')) {
-      return {status: 'expired'};
+      return { status: 'expired' };
     }
-    return {status: 'invalid'};
+    return { status: 'invalid' };
   } catch (e) {
-    return {status: 'invalid'};
+    return { status: 'invalid' };
   }
 }
 
-// ─── Elder display name (for notifications) ───────────────────────────────────
+// ── Elder display name (for notifications) ────────────────────────────────────
 
 export async function getElderDisplayName(): Promise<string> {
-  if (_cachedElderName !== null) {return _cachedElderName;}
+  if (_cachedElderName !== null) { return _cachedElderName; }
   const profile = await getElderProfile();
   _cachedElderName = profile?.name ?? '長輩';
   return _cachedElderName;
 }
 
-// ─── Family members (shown on elder side) ────────────────────────────────────
+// ── Family members (shown on elder side) ──────────────────────────────────────
 
 export async function getFamilyMembers(): Promise<FamilyMember[]> {
   try {
@@ -316,7 +347,7 @@ export async function removeFamilyMember(familyId: string): Promise<FamilyMember
   return updated;
 }
 
-// ─── Family count (shown on elder side) ──────────────────────────────────────
+// ── Family count (shown on elder side) ────────────────────────────────────────
 
 export async function getElderFamilyCount(): Promise<number> {
   const members = await getFamilyMembers();
@@ -331,18 +362,18 @@ export async function incrementElderFamilyCount(): Promise<number> {
   return getElderFamilyCount();
 }
 
-// ─── Family role ──────────────────────────────────────────────────────────────
+// ── Family role ───────────────────────────────────────────────────────────────
 
 export async function getFamilyRole(): Promise<FamilyRole> {
   const profile = await getFamilyProfile();
   return profile?.role ?? 'admin';
 }
 
-// ─── Invite code ──────────────────────────────────────────────────────────────
+// ── Invite code ───────────────────────────────────────────────────────────────
 
 export async function generateAndSaveInviteCode(): Promise<InviteCode> {
   const code = String(Math.floor(10000000 + Math.random() * 90000000));
-  const invite: InviteCode = {code, createdAt: new Date().toISOString()};
+  const invite: InviteCode = { code, createdAt: new Date().toISOString() };
   await AsyncStorage.setItem(KEY_INVITE_CODE, JSON.stringify(invite));
   return invite;
 }
@@ -358,19 +389,19 @@ export async function getInviteCode(): Promise<InviteCode | null> {
 
 export async function verifyInviteCode(code: string): Promise<boolean> {
   const invite = await getInviteCode();
-  if (!invite || invite.code !== code.trim()) {return false;}
+  if (!invite || invite.code !== code.trim()) { return false; }
   const ageHours = (Date.now() - new Date(invite.createdAt).getTime()) / 3_600_000;
   return ageHours <= 24;
 }
 
 export async function verifyInviteCodeStatus(code: string): Promise<VerifyInviteStatus> {
   const invite = await getInviteCode();
-  if (!invite || invite.code !== code.trim()) {return 'invalid';}
+  if (!invite || invite.code !== code.trim()) { return 'invalid'; }
   const ageHours = (Date.now() - new Date(invite.createdAt).getTime()) / 3_600_000;
   return ageHours <= 24 ? 'ok' : 'expired';
 }
 
-// ─── Full reset ───────────────────────────────────────────────────────────────
+// ── Full reset ────────────────────────────────────────────────────────────────
 
 export async function clearAllAppData(): Promise<void> {
   _cachedElderName = null;

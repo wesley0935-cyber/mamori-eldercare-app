@@ -1,4 +1,4 @@
-import {AppState, type AppStateStatus} from 'react-native';
+import {AppState, NativeEventEmitter, NativeModules, type AppStateStatus} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {sendInactivityAlert} from './NotificationService';
 import {getElderDisplayName} from './ProfileService';
@@ -7,7 +7,10 @@ import {getThresholdSettings} from './ThresholdSettingsService';
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 const KEY_LAST_ACTIVE_TS   = 'activity_last_active_ts';
-const KEY_ALERT_SENT       = 'activity_alert_sent';
+const KEY_ALERT_COUNT      = 'activity_alert_count';
+const KEY_ALERT_LAST_SENT  = 'activity_alert_last_sent';
+const MAX_ALERT_COUNT      = 3;
+const ALERT_INTERVAL_MS    = 30 * 60 * 1000; // 30 分鐘
 const EVAL_INTERVAL_MS     = 60_000;
 const STEP_DELTA_THRESHOLD = 10;
 
@@ -48,10 +51,8 @@ function isInSleepWindow(startHour: number, endHour: number): boolean {
  */
 export async function updateLastActive(): Promise<void> {
   await AsyncStorage.setItem(KEY_LAST_ACTIVE_TS, String(Date.now()));
-  const sent = await AsyncStorage.getItem(KEY_ALERT_SENT);
-  if (sent === 'true') {
-    await AsyncStorage.setItem(KEY_ALERT_SENT, 'false');
-  }
+  await AsyncStorage.removeItem(KEY_ALERT_COUNT);
+  await AsyncStorage.removeItem(KEY_ALERT_LAST_SENT);
 }
 
 // ─── Pause / resume (used by fall-detection modal) ───────────────────────────
@@ -110,7 +111,6 @@ async function evaluate(): Promise<void> {
   //     情況A: last_active_ts 早於昨晚睡眠開始時間 → 重置為現在（睡前就無活躍）
   //     情況B: last_active_ts 在睡眠時段內（例如05:30起來）→ 保留，不覆蓋
   if (wasInSleep === true && !inSleep) {
-    await AsyncStorage.setItem(KEY_ALERT_SENT, 'false');
 
     // Compute the timestamp when the sleep window started (today's sleepStartHour).
     // If sleepStart >= sleepEnd the window spans midnight, so sleepStart was yesterday.
@@ -149,11 +149,19 @@ async function evaluate(): Promise<void> {
   const thresholdMs = inactivityHours * 60 * 60 * 1000;
   if (elapsed < thresholdMs) return;
 
-  const alertSent = await AsyncStorage.getItem(KEY_ALERT_SENT);
-  if (alertSent === 'true') return;
+  const countRaw = await AsyncStorage.getItem(KEY_ALERT_COUNT);
+  const count = countRaw ? parseInt(countRaw, 10) : 0;
+  if (count >= MAX_ALERT_COUNT) return;
 
-  await AsyncStorage.setItem(KEY_ALERT_SENT, 'true');
-  sendInactivityAlert(await getElderDisplayName(), elapsed / 3_600_000);
+  const lastSentRaw = await AsyncStorage.getItem(KEY_ALERT_LAST_SENT);
+  const lastSent = lastSentRaw ? parseInt(lastSentRaw, 10) : 0;
+  if (count > 0 && Date.now() - lastSent < ALERT_INTERVAL_MS) return;
+
+  await AsyncStorage.setItem(KEY_ALERT_COUNT, String(count + 1));
+  await AsyncStorage.setItem(KEY_ALERT_LAST_SENT, String(Date.now()));
+  const elderName = await getElderDisplayName();
+  // 警示記錄由家屬端收到 FCM 後自行儲存，長輩端不需在本地寫入
+  sendInactivityAlert(elderName, elapsed / 3_600_000);
 }
 
 // ─── First-launch initialisation ─────────────────────────────────────────────
@@ -182,7 +190,13 @@ async function initializeLastActiveTs(): Promise<void> {
  * If the count grew by ≥ 10 since the last reading, the elder is considered active.
  */
 export async function notifyStepsUpdated(steps: number): Promise<void> {
-  if (lastKnownSteps !== null && steps - lastKnownSteps >= STEP_DELTA_THRESHOLD) {
+  if (lastKnownSteps === null) {
+    // 第一次收到步數（APP 重啟後）→ 設基準值並立即重置活躍時間
+    lastKnownSteps = steps;
+    await updateLastActive();
+    return;
+  }
+  if (steps - lastKnownSteps >= STEP_DELTA_THRESHOLD) {
     await updateLastActive();
   }
   lastKnownSteps = steps;
@@ -210,8 +224,15 @@ export function startActivityDetection(): () => void {
   // Await init before the first evaluate() to eliminate the race condition
   // where evaluate() reads null while the write is still in flight.
   initializeLastActiveTs()
+    .then(() => updateLastActive()) // APP 啟動時無條件重置一次
     .then(() => evaluate())
     .catch(console.error);
+
+  const FallDetectionModule = NativeModules.FallDetectionModule;
+  const fallEmitter = new NativeEventEmitter(FallDetectionModule);
+  const inactivitySub = fallEmitter.addListener('InactivityTick', () => {
+    evaluate().catch(console.error);
+  });
 
   // Situation A: foreground transition
   const appStateSub = AppState.addEventListener(
@@ -230,6 +251,7 @@ export function startActivityDetection(): () => void {
 
   return () => {
     appStateSub.remove();
+    inactivitySub.remove();
     clearInterval(timer);
     lastKnownSteps = null;
     wasInSleep     = null;

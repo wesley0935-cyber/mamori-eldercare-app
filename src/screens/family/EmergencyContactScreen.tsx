@@ -135,70 +135,72 @@ function FormModal({visible, editing, hasPrimary, onSave, onClose}: FormModalPro
   return (
     <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
       <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.modalOverlay}>
         <View style={styles.modalSheet}>
           <View style={styles.modalHandle} />
-          <Text style={styles.modalTitle}>{title}</Text>
+          <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+            <Text style={styles.modalTitle}>{title}</Text>
 
-          {/* 姓名 */}
-          <Text style={styles.fieldLabel}>姓名</Text>
-          <TextInput
-            style={styles.input}
-            value={form.name}
-            onChangeText={v => set('name', v)}
-            placeholder="例如：王小明"
-            placeholderTextColor={COLORS.textSecondary}
-            returnKeyType="next"
-            accessibilityLabel="聯絡人姓名"
-          />
-
-          {/* 電話 */}
-          <Text style={styles.fieldLabel}>電話號碼</Text>
-          <TextInput
-            style={styles.input}
-            value={form.phone}
-            onChangeText={v => set('phone', v.replace(/[^0-9+\-() ]/g, ''))}
-            placeholder="例如：0912345678"
-            placeholderTextColor={COLORS.textSecondary}
-            keyboardType="phone-pad"
-            returnKeyType="done"
-            accessibilityLabel="電話號碼"
-          />
-
-          {/* 關係 */}
-          <Text style={styles.fieldLabel}>關係</Text>
-          <RelSelector
-            value={form.relationship}
-            onChange={v => set('relationship', v)}
-          />
-
-          {/* 主要聯絡人 */}
-          <View style={styles.primaryRow}>
-            <View style={styles.primaryInfo}>
-              <Text style={styles.primaryLabel}>設為主要聯絡人</Text>
-              <Text style={styles.primaryHint}>
-                SOS 時優先撥打此聯絡人電話
-              </Text>
-            </View>
-            <Switch
-              value={form.isPrimary}
-              onValueChange={v => set('isPrimary', v)}
-              trackColor={{false: COLORS.border, true: COLORS.safe}}
-              thumbColor={COLORS.white}
-              // Disable toggle-off if this is the only primary and it's currently editing
-              disabled={editing?.isPrimary && !hasPrimary ? false : false}
-              accessibilityLabel="設為主要聯絡人"
+            {/* 姓名 */}
+            <Text style={styles.fieldLabel}>姓名</Text>
+            <TextInput
+              style={styles.input}
+              value={form.name}
+              onChangeText={v => set('name', v)}
+              placeholder="例如：王小明"
+              placeholderTextColor={COLORS.textSecondary}
+              returnKeyType="next"
+              accessibilityLabel="聯絡人姓名"
             />
-          </View>
 
-          {/* Buttons */}
-          <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
-            <Text style={styles.saveBtnText}>儲存</Text>
-          </TouchableOpacity>
-          <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
-            <Text style={styles.cancelBtnText}>取消</Text>
-          </TouchableOpacity>
+            {/* 電話 */}
+            <Text style={styles.fieldLabel}>電話號碼</Text>
+            <TextInput
+              style={styles.input}
+              value={form.phone}
+              onChangeText={v => set('phone', v.replace(/[^0-9+\-() ]/g, ''))}
+              placeholder="例如：0912345678"
+              placeholderTextColor={COLORS.textSecondary}
+              keyboardType="phone-pad"
+              returnKeyType="done"
+              accessibilityLabel="電話號碼"
+            />
+
+            {/* 關係 */}
+            <Text style={styles.fieldLabel}>關係</Text>
+            <RelSelector
+              value={form.relationship}
+              onChange={v => set('relationship', v)}
+            />
+
+            {/* 主要聯絡人 */}
+            <View style={styles.primaryRow}>
+              <View style={styles.primaryInfo}>
+                <Text style={styles.primaryLabel}>設為主要聯絡人</Text>
+                <Text style={styles.primaryHint}>
+                  SOS 時優先撥打此聯絡人電話
+                </Text>
+              </View>
+              <Switch
+                value={form.isPrimary}
+                onValueChange={v => set('isPrimary', v)}
+                trackColor={{false: COLORS.border, true: COLORS.safe}}
+                thumbColor={COLORS.white}
+                // Disable toggle-off if this is the only primary and it's currently editing
+                disabled={editing?.isPrimary && !hasPrimary ? false : false}
+                accessibilityLabel="設為主要聯絡人"
+              />
+            </View>
+
+            {/* Buttons */}
+            <TouchableOpacity style={styles.saveBtn} onPress={handleSave}>
+              <Text style={styles.saveBtnText}>儲存</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.cancelBtn} onPress={onClose}>
+              <Text style={styles.cancelBtnText}>取消</Text>
+            </TouchableOpacity>
+          </ScrollView>
         </View>
       </KeyboardAvoidingView>
     </Modal>

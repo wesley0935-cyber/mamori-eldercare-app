@@ -15,6 +15,7 @@ import {
   getThresholdSettings,
   THRESHOLD_DEFAULTS,
 } from '../services/ThresholdSettingsService';
+import {getStepTrend, type StepRecord} from '../api/stepsApi';
 
 // ─── 色票 ──────────────────────────────────────────────────────────────────────
 const C = {
@@ -102,11 +103,68 @@ function buildMonthBars(pairCode: string): BarItem[] {
   });
 }
 
+// ─── API 資料轉換（真實數據）─────────────────────────────────────────────────
+function buildWeekBarsFromApi(records: StepRecord[]): BarItem[] {
+  // 使用 UTC 日期字串作為查詢基準，與上傳格式一致
+  const todayStr = new Date().toISOString().slice(0, 10);
+  return Array.from({length: 7}, (_, i) => {
+    // UTC 日期往前推 6 天
+    const d = new Date(todayStr + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() - 6 + i);
+    const dateStr = d.toISOString().slice(0, 10); // 查 DB 用的 UTC 日期
+    const rec = records.find(r => r.date === dateStr);
+    // 顯示標籤用本地時間（+12h 避免時區跨日）
+    const localD = new Date(dateStr + 'T12:00:00Z');
+    const wd = WEEKDAYS[localD.getDay()];
+    const ds = `${localD.getMonth() + 1}/${localD.getDate()}`;
+    return {
+      label: wd,
+      label2: ds,
+      value: rec?.steps ?? 0,
+      isToday: dateStr === todayStr,
+      dateSub: `${ds}（${wd}）`,
+    };
+  });
+}
+
+function buildMonthBarsFromApi(records: StepRecord[]): BarItem[] {
+  // 使用 UTC 日期字串作為查詢基準，與上傳格式一致
+  const todayStr = new Date().toISOString().slice(0, 10);
+  return Array.from({length: 31}, (_, i) => {
+    // UTC 日期往前推 30 天
+    const d = new Date(todayStr + 'T00:00:00Z');
+    d.setUTCDate(d.getUTCDate() - 30 + i);
+    const dateStr = d.toISOString().slice(0, 10); // 查 DB 用的 UTC 日期
+    const rec = records.find(r => r.date === dateStr);
+    // 顯示標籤用本地時間（+12h 避免時區跨日）
+    const localD = new Date(dateStr + 'T12:00:00Z');
+    const day = localD.getDate();
+    return {
+      label: String(day),
+      value: rec?.steps ?? 0,
+      isToday: dateStr === todayStr,
+      dateSub: `${localD.getMonth() + 1}/${day}`,
+    };
+  });
+}
+
+function buildDayBarsFromApi(records: StepRecord[]): BarItem[] {
+  const today = new Date().toISOString().slice(0, 10);
+  const todayRecord = records.find(r => r.date === today);
+  const steps = todayRecord?.steps ?? 0;
+  return [{
+    label: '今日',
+    value: steps,
+    isToday: true,
+    dateSub: '今日',
+  }];
+}
+
 // ─── 統計摘要 ─────────────────────────────────────────────────────────────────
 interface Stats {
   primary: string;
-  max: string;
-  min: string;
+  max: string | null;
+  min: string | null;
 }
 
 function calcStats(bars: BarItem[], mode: ViewMode): Stats {
@@ -121,8 +179,8 @@ function calcStats(bars: BarItem[], mode: ViewMode): Stats {
     const total = active.reduce((s, b) => s + b.value, 0);
     return {
       primary: `今日合計 ${fmtNum(total)} 步`,
-      max: `${fmtNum(maxBar.value)} 步（${maxBar.dateSub}）`,
-      min: `${fmtNum(minBar.value)} 步（${minBar.dateSub}）`,
+      max: null,
+      min: null,
     };
   }
   const avg = Math.round(active.reduce((s, b) => s + b.value, 0) / active.length);
@@ -242,10 +300,12 @@ function StatRow({stats}: {stats: Stats}) {
   return (
     <View style={s.statsRow}>
       <Text style={s.statPrimary}>{stats.primary}</Text>
-      <View style={s.statSubRow}>
-        <Text style={s.statSub}>▲ {stats.max}</Text>
-        <Text style={[s.statSub, {marginLeft: 12}]}>▼ {stats.min}</Text>
-      </View>
+      {(stats.max != null || stats.min != null) && (
+        <View style={s.statSubRow}>
+          {stats.max != null && <Text style={s.statSub}>▲ {stats.max}</Text>}
+          {stats.min != null && <Text style={[s.statSub, {marginLeft: 12}]}>▼ {stats.min}</Text>}
+        </View>
+      )}
     </View>
   );
 }
@@ -253,22 +313,49 @@ function StatRow({stats}: {stats: Stats}) {
 // ─── 主元件 ───────────────────────────────────────────────────────────────────
 interface Props {
   pairCode: string;
+  elderId?: string;
 }
 
-export default function StepTrendChart({pairCode}: Props) {
+export default function StepTrendChart({pairCode, elderId}: Props) {
   const [viewMode, setViewMode] = useState<ViewMode>('week');
   const [stepGoal, setStepGoal] = useState(THRESHOLD_DEFAULTS.stepGoal);
   const [chartWidth, setChartWidth] = useState(0);
+  const [apiRecords, setApiRecords] = useState<StepRecord[] | null>(null);
 
   useEffect(() => {
     getThresholdSettings().then(s => setStepGoal(s.stepGoal));
   }, []);
 
+  // 有 elderId 時從後端取得步數趨勢（31 天，涵蓋週/月視圖）
+  useEffect(() => {
+    if (!elderId) { setApiRecords(null); return; }
+    getStepTrend(elderId, 31)
+      .then(records => setApiRecords(records))
+      .catch(() => setApiRecords(null));
+  }, [elderId, viewMode]);
+
+  // 每 3 分鐘自動刷新（確保週/月視圖資料持續更新）
+  useEffect(() => {
+    if (!elderId) return;
+    const id = setInterval(() => {
+      getStepTrend(elderId, 31)
+        .then(records => setApiRecords(records))
+        .catch(() => {});
+    }, 3 * 60_000);
+    return () => clearInterval(id);
+  }, [elderId]);
+
   const bars = useMemo(() => {
-    if (viewMode === 'week') {return buildWeekBars(pairCode);}
-    if (viewMode === 'day')  {return buildDayBars(pairCode);}
+    if (apiRecords !== null) {
+      if (viewMode === 'week')  { return buildWeekBarsFromApi(apiRecords); }
+      if (viewMode === 'month') { return buildMonthBarsFromApi(apiRecords); }
+      // 天視圖：用今日實際步數顯示
+      return buildDayBarsFromApi(apiRecords);
+    }
+    if (viewMode === 'week')  { return buildWeekBars(pairCode); }
+    if (viewMode === 'day')   { return buildDayBars(pairCode); }
     return buildMonthBars(pairCode);
-  }, [pairCode, viewMode]);
+  }, [pairCode, viewMode, apiRecords]);
 
   const stats = useMemo(() => calcStats(bars, viewMode), [bars, viewMode]);
 
@@ -309,11 +396,44 @@ export default function StepTrendChart({pairCode}: Props) {
       <View
         onLayout={e => setChartWidth(e.nativeEvent.layout.width)}
         style={{overflow: 'hidden'}}>
-        {chartWidth > 0 && (
-          viewMode === 'month' ? (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}>
+        {viewMode === 'day' ? (
+          <View style={{
+            alignItems: 'center',
+            justifyContent: 'center',
+            paddingVertical: 32,
+          }}>
+            <Text style={{
+              fontSize: 64,
+              fontWeight: '900',
+              color: '#274A6E',
+              letterSpacing: 2,
+            }}>
+              {fmtNum(bars[0]?.value ?? 0)}
+            </Text>
+            <Text style={{
+              fontSize: 16,
+              color: '#7B7A6A',
+              marginTop: 8,
+              fontWeight: '600',
+            }}>
+              步
+            </Text>
+          </View>
+        ) : (
+          chartWidth > 0 && (
+            viewMode === 'month' ? (
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}>
+                <BarColumns
+                  bars={bars}
+                  barWidth={barWidth}
+                  barGap={BAR_GAP}
+                  viewMode={viewMode}
+                  stepGoal={stepGoal}
+                />
+              </ScrollView>
+            ) : (
               <BarColumns
                 bars={bars}
                 barWidth={barWidth}
@@ -321,15 +441,7 @@ export default function StepTrendChart({pairCode}: Props) {
                 viewMode={viewMode}
                 stepGoal={stepGoal}
               />
-            </ScrollView>
-          ) : (
-            <BarColumns
-              bars={bars}
-              barWidth={barWidth}
-              barGap={BAR_GAP}
-              viewMode={viewMode}
-              stepGoal={stepGoal}
-            />
+            )
           )
         )}
       </View>

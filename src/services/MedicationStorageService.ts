@@ -1,4 +1,10 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import {
+  getMedications as apiGetMedications,
+  addMedication as apiAddMedication,
+  updateMedication as apiUpdateMedication,
+  deleteMedication as apiDeleteMedication,
+} from '../api/medicationApi';
 
 export type MedPeriod = 'morning' | 'noon' | 'evening' | 'bedtime';
 
@@ -56,7 +62,6 @@ export function yesterdayDateStr(): string {
 
 // ─── Storage keys (per-elder) ─────────────────────────────────────────────────
 
-// elderId 預設為 'default'，向下相容舊資料
 function medsKey(elderId: string = 'default'): string {
   return `medications_list_${elderId}`;
 }
@@ -75,18 +80,39 @@ function hhmm(d: Date): string {
 
 // ─── Medication list ──────────────────────────────────────────────────────────
 
-const DEFAULT_MEDS: Medication[] = [
-  {id: 'default_1', name: '血壓藥',   time: '08:00', period: 'morning', note: '早餐後'},
-  {id: 'default_2', name: '維他命 D', time: '12:00', period: 'noon',    note: ''},
-  {id: 'default_3', name: '降血糖藥', time: '18:00', period: 'evening', note: '晚餐後'},
-];
+async function getBackendElderId(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem('backendElderId');
+  } catch {
+    return null;
+  }
+}
 
 export async function getMedications(elderId: string = 'default'): Promise<Medication[]> {
+  try {
+    const backendElderId = await getBackendElderId();
+    if (backendElderId) {
+      const records = await apiGetMedications(backendElderId);
+      if (records.length > 0) {
+        return records.map(r => ({
+          id: r.id,
+          name: r.name,
+          time: r.time,
+          period: r.period as MedPeriod,
+          note: r.note ?? '',
+        }));
+      }
+    }
+  } catch (e) {
+    console.warn('[MedicationStorageService] getMedications fallback to local:', e);
+  }
+  // fallback：後端失敗時讀本地
   try {
     const raw = await AsyncStorage.getItem(medsKey(elderId));
     if (raw) return JSON.parse(raw) as Medication[];
   } catch {}
-  return DEFAULT_MEDS;
+  // 無任何資料時回傳空陣列，不再提供假的預設藥物
+  return [];
 }
 
 export async function saveMedications(meds: Medication[], elderId: string = 'default'): Promise<void> {
@@ -94,6 +120,22 @@ export async function saveMedications(meds: Medication[], elderId: string = 'def
 }
 
 export async function addMedication(med: Omit<Medication, 'id'>, elderId: string = 'default'): Promise<Medication[]> {
+  try {
+    const backendElderId = await getBackendElderId();
+    if (backendElderId) {
+      await apiAddMedication(backendElderId, {
+        name: med.name,
+        dosage: '',
+        time: med.time,
+        period: med.period,
+        note: med.note,
+      });
+      return getMedications(elderId);
+    }
+  } catch (e) {
+    console.warn('[MedicationStorageService] addMedication fallback to local:', e);
+  }
+  // fallback
   const meds = await getMedications(elderId);
   const newMed: Medication = {...med, id: `med_${Date.now()}`};
   const updated = [...meds, newMed];
@@ -102,6 +144,22 @@ export async function addMedication(med: Omit<Medication, 'id'>, elderId: string
 }
 
 export async function updateMedication(updated: Medication, elderId: string = 'default'): Promise<Medication[]> {
+  try {
+    const backendElderId = await getBackendElderId();
+    if (backendElderId) {
+      await apiUpdateMedication(backendElderId, updated.id, {
+        name: updated.name,
+        dosage: '',
+        time: updated.time,
+        period: updated.period,
+        note: updated.note,
+      });
+      return getMedications(elderId);
+    }
+  } catch (e) {
+    console.warn('[MedicationStorageService] updateMedication fallback to local:', e);
+  }
+  // fallback
   const meds = await getMedications(elderId);
   const newList = meds.map(m => (m.id === updated.id ? updated : m));
   await saveMedications(newList, elderId);
@@ -109,6 +167,16 @@ export async function updateMedication(updated: Medication, elderId: string = 'd
 }
 
 export async function deleteMedication(id: string, elderId: string = 'default'): Promise<Medication[]> {
+  try {
+    const backendElderId = await getBackendElderId();
+    if (backendElderId) {
+      await apiDeleteMedication(backendElderId, id);
+      return getMedications(elderId);
+    }
+  } catch (e) {
+    console.warn('[MedicationStorageService] deleteMedication fallback to local:', e);
+  }
+  // fallback
   const meds = await getMedications(elderId);
   const newList = meds.filter(m => m.id !== id);
   await saveMedications(newList, elderId);
