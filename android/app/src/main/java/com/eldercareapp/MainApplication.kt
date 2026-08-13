@@ -16,6 +16,8 @@ class MainApplication : Application(), ReactApplication {
         PackageList(this).packages.apply {
           add(ScreenUnlockPackage())
           add(FallDetectionPackage())
+          add(StepCounterPackage())
+          add(FusedLocationPackage())
         },
     )
   }

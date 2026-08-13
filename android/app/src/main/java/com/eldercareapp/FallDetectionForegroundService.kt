@@ -9,18 +9,37 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.content.SharedPreferences
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 
 class FallDetectionForegroundService : Service(), SensorEventListener {
 
     private lateinit var sensorManager: SensorManager
     private var accelerometer: Sensor? = null
     private var gyroscope: Sensor? = null
+    private lateinit var prefs: SharedPreferences
+    private var lastCheckedDate: String = ""
+    private val handler = Handler(Looper.getMainLooper())
+    private val inactivityRunnable = object : Runnable {
+        override fun run() {
+            val today = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(java.util.Date())
+            if (lastCheckedDate.isNotEmpty() && lastCheckedDate != today) {
+                onDayChanged?.invoke()
+            }
+            lastCheckedDate = today
+            onInactivityCheck?.invoke()
+            handler.postDelayed(this, 60_000L)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         ensureNotificationChannel()
         startForeground(NOTIFICATION_ID, buildNotification())
+        prefs = getSharedPreferences("step_prefs", MODE_PRIVATE)
+        handler.postDelayed(inactivityRunnable, 60_000L)
 
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
@@ -36,6 +55,7 @@ class FallDetectionForegroundService : Service(), SensorEventListener {
     override fun onDestroy() {
         super.onDestroy()
         sensorManager.unregisterListener(this)
+        handler.removeCallbacks(inactivityRunnable)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -74,5 +94,7 @@ class FallDetectionForegroundService : Service(), SensorEventListener {
 
         // Callback set by FallDetectionModule to forward sensor data to JS
         var onSensorData: ((type: String, x: Float, y: Float, z: Float) -> Unit)? = null
+        var onInactivityCheck: (() -> Unit)? = null
+        var onDayChanged: (() -> Unit)? = null
     }
 }

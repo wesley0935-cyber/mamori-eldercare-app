@@ -18,6 +18,12 @@ class FallDetectionModule(private val ctx: ReactApplicationContext) :
         FallDetectionForegroundService.onSensorData = { type, x, y, z ->
             emitSensorEvent(type, x, y, z)
         }
+        FallDetectionForegroundService.onInactivityCheck = {
+            emitInactivityTick()
+        }
+        FallDetectionForegroundService.onDayChanged = {
+            StepCounterModule.onDayChanged?.invoke()
+        }
     }
 
     private fun emitSensorEvent(type: String, x: Float, y: Float, z: Float) {
@@ -30,6 +36,12 @@ class FallDetectionModule(private val ctx: ReactApplicationContext) :
         }
         ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
             .emit("FallDetectionSensorEvent", params)
+    }
+
+    private fun emitInactivityTick() {
+        if (!ctx.hasActiveReactInstance()) return
+        ctx.getJSModule(DeviceEventManagerModule.RCTDeviceEventEmitter::class.java)
+            .emit("InactivityTick", null)
     }
 
     @ReactMethod
