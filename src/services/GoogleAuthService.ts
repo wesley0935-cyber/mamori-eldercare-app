@@ -12,7 +12,7 @@ const WEB_CLIENT_ID =
 
 // 來自 GoogleService-Info.plist 的 CLIENT_ID（iOS OAuth 用戶端）
 const IOS_CLIENT_ID =
-  '115371530434-rrb86lfpkbgn11g3mhh1jpb9qcsbn5u1.apps.googleusercontent.com';
+  '115371530434-367u7qc38ki3ehnlbu8h8m0200kpqmam.apps.googleusercontent.com';
 
 let configured = false;
 

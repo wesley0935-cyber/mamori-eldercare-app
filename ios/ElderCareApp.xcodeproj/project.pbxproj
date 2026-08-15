@@ -275,7 +275,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "com.eldercareapp";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.eldercareapp.ios";
 				PRODUCT_NAME = ElderCareApp;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
@@ -304,7 +304,7 @@
 					"-ObjC",
 					"-lc++",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = "com.eldercareapp";
+				PRODUCT_BUNDLE_IDENTIFIER = "com.eldercareapp.ios";
 				PRODUCT_NAME = ElderCareApp;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_VERSION = 5.0;
