@@ -1,4 +1,5 @@
 import notifee, {AndroidImportance, EventType} from '@notifee/react-native';
+import {Platform} from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   getNotificationSettings,
@@ -53,6 +54,9 @@ export async function initFCM(): Promise<void> {
   try {
     const { registerFcmToken } = require('../api/notificationApi');
     const messaging = require('@react-native-firebase/messaging').default;
+    if (Platform.OS === 'ios') {
+      await messaging().registerDeviceForRemoteMessages();
+    }
     const token = await messaging().getToken();
     await AsyncStorage.setItem(FCM_TOKEN_KEY, token);
     const deviceId = await AsyncStorage.getItem('deviceId') ?? 'unknown';
