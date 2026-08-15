@@ -69,8 +69,13 @@ export async function initFCM(): Promise<void> {
     const token = await messaging().getToken();
     await AsyncStorage.setItem(FCM_TOKEN_KEY, token);
     const deviceId = await AsyncStorage.getItem('deviceId') ?? 'unknown';
-    await registerFcmToken(deviceId, token);
-    console.log('[FCM] Token registered:', token);
+    try {
+      await registerFcmToken(deviceId, token);
+      console.log('[FCM] Token registered:', token);
+    } catch (regError: any) {
+      console.warn('[FCM] Token registration to backend failed (non-fatal):', regError?.message);
+      // 不 throw，token 本身已經拿到，這只是登記失敗
+    }
     // TODO: 除錯用，測試完記得移除
     Alert.alert('FCM Token 取得成功（除錯）', `Token 前 20 字：${token?.substring(0, 20)}...`);
   } catch (e: any) {
