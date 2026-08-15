@@ -44,6 +44,9 @@ export async function initFCM(): Promise<void> {
   // Must request permission before any displayNotification call (Android 13+).
   const settings = await notifee.requestPermission();
   console.log('[Notifee] Permission status:', settings.authorizationStatus);
+  // TODO: 除錯用，測試完記得移除
+  const {Alert} = require('react-native');
+  Alert.alert('推播權限結果（除錯）', `authorizationStatus = ${settings.authorizationStatus}`);
 
   await createChannels();
 
@@ -55,7 +58,11 @@ export async function initFCM(): Promise<void> {
     const deviceId = await AsyncStorage.getItem('deviceId') ?? 'unknown';
     await registerFcmToken(deviceId, token);
     console.log('[FCM] Token registered:', token);
-  } catch (e) {
+    // TODO: 除錯用，測試完記得移除
+    Alert.alert('FCM Token 取得成功（除錯）', `Token 前 20 字：${token?.substring(0, 20)}...`);
+  } catch (e: any) {
+    // TODO: 除錯用，測試完記得移除
+    Alert.alert('FCM Token 取得失敗（除錯）', `錯誤訊息：${e?.message ?? '無'}\n錯誤代碼：${e?.code ?? '無'}`);
     const mock = `mock-fcm-${Date.now()}`;
     await AsyncStorage.setItem(FCM_TOKEN_KEY, mock);
     console.log('[FCM] Mock token stored (fallback):', mock);
