@@ -305,7 +305,10 @@ export async function confirmPairingWithCode(code: string): Promise<TryPairResul
       return { status: 'expired' };
     }
     return { status: 'invalid' };
-  } catch (e) {
+  } catch (e: any) {
+    console.error('[confirmPairingWithCode] Error:', e);
+    console.error('[confirmPairingWithCode] Error message:', e?.message);
+    console.error('[confirmPairingWithCode] Error code:', e?.code);
     return { status: 'invalid' };
   }
 }
