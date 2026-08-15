@@ -65,20 +65,25 @@ export default function AppNavigator() {
 
   useEffect(() => {
     async function init() {
-      const role = await getAppRole();
-      const token = await AsyncStorage.getItem('familyToken');
-      setFamilyToken(token);
-      const guideShown = await AsyncStorage.getItem(PERMISSION_GUIDE_KEY);
-      if (role === null) {
-        setAppRoleState('onboarding');
-      } else if (!guideShown && role !== 'family') {
-        setPendingRole(role);
-        setShowPermGuide(true);
-      } else {
-        setAppRoleState(role);
+      try {
+        const role = await getAppRole();
+        const token = await AsyncStorage.getItem('familyToken');
+        setFamilyToken(token);
+        const guideShown = await AsyncStorage.getItem(PERMISSION_GUIDE_KEY);
+        if (role === null) {
+          setAppRoleState('onboarding');
+        } else if (!guideShown && role !== 'family') {
+          setPendingRole(role);
+          setShowPermGuide(true);
+        } else {
+          setAppRoleState(role);
+        }
+      } catch (e) {
+        console.error('[AppNavigator] init failed:', e);
+        setAppRoleState('onboarding'); // 失敗時 fallback 到 onboarding，至少不會白屏
       }
     }
-    init();
+    init().catch(e => console.error('[AppNavigator] init uncaught:', e));
   }, []);
 
   const handleOnboardingComplete = async () => {
