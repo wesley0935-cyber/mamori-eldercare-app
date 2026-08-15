@@ -56,6 +56,15 @@ export async function initFCM(): Promise<void> {
     const messaging = require('@react-native-firebase/messaging').default;
     if (Platform.OS === 'ios') {
       await messaging().registerDeviceForRemoteMessages();
+
+      // iOS 的 APNs token 是非同步到位的，第一次呼叫常回 null，需要輪詢等待
+      let apnsToken = await messaging().getAPNSToken();
+      let retries = 0;
+      while (!apnsToken && retries < 10) {
+        await new Promise<void>(resolve => setTimeout(() => resolve(), 500));
+        apnsToken = await messaging().getAPNSToken();
+        retries++;
+      }
     }
     const token = await messaging().getToken();
     await AsyncStorage.setItem(FCM_TOKEN_KEY, token);
