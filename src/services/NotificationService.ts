@@ -7,6 +7,7 @@ import {
 } from './NotificationSettingsService';
 import {getElderDisplayName} from './ProfileService';
 import type {AlertRecord} from './AlertStorageService';
+import {getOrCreateDeviceId} from '../utils/deviceId';
 
 // ─── Channel IDs ──────────────────────────────────────────────────────────────
 
@@ -68,7 +69,7 @@ export async function initFCM(): Promise<void> {
     }
     const token = await messaging().getToken();
     await AsyncStorage.setItem(FCM_TOKEN_KEY, token);
-    const deviceId = await AsyncStorage.getItem('deviceId') ?? 'unknown';
+    const deviceId = await getOrCreateDeviceId();
     try {
       await registerFcmToken(deviceId, token);
       console.log('[FCM] Token registered:', token);

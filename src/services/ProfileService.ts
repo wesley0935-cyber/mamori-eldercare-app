@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DeviceInfo from 'react-native-device-info';
+import {getOrCreateDeviceId} from '../utils/deviceId';
 
 export type AppRole = 'elder' | 'family';
 export type FamilyRole = 'admin' | 'viewer';
@@ -93,11 +94,7 @@ export async function generateAndSavePairCode(params?: {
 }): Promise<ElderPairCodeRecord> {
   try {
     const { generatePairingCode } = require('../api/pairingApi');
-    let deviceId = await AsyncStorage.getItem('deviceId');
-    if (!deviceId) {
-      deviceId = await DeviceInfo.getUniqueId();
-      await AsyncStorage.setItem('deviceId', deviceId);
-    }
+    const deviceId = await getOrCreateDeviceId();
     const result = await generatePairingCode({
       elderName: params?.elderName || '',
       elderAge: params?.elderAge || 0,
@@ -117,7 +114,13 @@ export async function generateAndSavePairCode(params?: {
     };
     await AsyncStorage.setItem(KEY_ELDER_PAIR_CODE, JSON.stringify(record));
     return record;
-  } catch (e) {
+  } catch (e: any) {
+    console.error('[generateAndSavePairCode] 後端失敗，改用本地碼:', e?.message, e?.code);
+    const {Alert} = require('react-native');
+    Alert.alert(
+      '配對碼後端登記失敗（除錯）',
+      `錯誤訊息：${e?.message ?? '無'}\n錯誤代碼：${e?.code ?? '無'}\nHTTP 狀態：${e?.response?.status ?? '無'}`,
+    );
     const code = await generatePairCode();
     const record: ElderPairCodeRecord = { code, createdAt: Date.now() };
     await AsyncStorage.setItem(KEY_ELDER_PAIR_CODE, JSON.stringify(record));
@@ -231,11 +234,7 @@ export async function updateElderPairCode(oldCode: string, newCode: string): Pro
 export async function tryPairWithCode(code: string): Promise<TryPairResult> {
   try {
     const { confirmPairing } = require('../api/pairingApi');
-    let deviceId = await AsyncStorage.getItem('deviceId');
-    if (!deviceId) {
-      deviceId = await DeviceInfo.getUniqueId();
-      await AsyncStorage.setItem('deviceId', deviceId);
-    }
+    const deviceId = await getOrCreateDeviceId();
     const result = await confirmPairing(code.trim(), deviceId);
 
     if (result?.success) {
