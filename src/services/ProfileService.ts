@@ -114,13 +114,8 @@ export async function generateAndSavePairCode(params?: {
     };
     await AsyncStorage.setItem(KEY_ELDER_PAIR_CODE, JSON.stringify(record));
     return record;
-  } catch (e: any) {
-    console.error('[generateAndSavePairCode] 後端失敗，改用本地碼:', e?.message, e?.code);
-    const {Alert} = require('react-native');
-    Alert.alert(
-      '配對碼後端登記失敗（除錯）',
-      `錯誤訊息：${e?.message ?? '無'}\n錯誤代碼：${e?.code ?? '無'}\nHTTP 狀態：${e?.response?.status ?? '無'}`,
-    );
+  } catch (e) {
+    console.error('[generateAndSavePairCode] 後端失敗，改用本地碼:', e);
     const code = await generatePairCode();
     const record: ElderPairCodeRecord = { code, createdAt: Date.now() };
     await AsyncStorage.setItem(KEY_ELDER_PAIR_CODE, JSON.stringify(record));
