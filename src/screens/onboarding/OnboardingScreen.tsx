@@ -26,7 +26,6 @@ import {
   confirmPairingWithCode,
   generateAndSavePairCode,
   getElderPairCodeRecord,
-  verifyInviteCodeStatus,
   type AppRole,
   type ElderProfile,
   type FamilyRole,
@@ -617,27 +616,63 @@ function FamilyJoinStep({familyName, onDone}: {familyName: string; onDone: () =>
     if (code.trim().length !== 8) {Alert.alert('請輸入 8 位數邀請碼'); return;}
     setLoading(true);
     try {
-      const status = await verifyInviteCodeStatus(code.trim());
-      if (status === 'expired') {
-        Alert.alert('邀請碼已過期', '此邀請碼已超過 24 小時，請向管理員重新索取');
+      const {confirmInviteCode} = require('../../api/pairingApi');
+      const result = await confirmInviteCode(code.trim());
+
+      if (!result?.success) {
+        Alert.alert(
+          '邀請碼無效或已過期',
+          '請確認邀請碼是否正確，或請管理員重新產生',
+        );
         return;
       }
-      if (status !== 'ok') {
-        Alert.alert('邀請碼無效', '請確認邀請碼是否正確，或請管理員重新產生');
-        return;
-      }
+
+      const now = new Date().toISOString();
       await setAppRole('family');
       await setFamilyProfile({name: familyName, role: 'viewer' as FamilyRole});
       const fp = await getFamilyProfile();
       await addFamilyMember({
         name: familyName,
-        pairedAt: new Date().toISOString(),
+        pairedAt: now,
         familyId: fp?.familyId,
         role: 'viewer',
       });
+
+      // 查看者也要看得到長輩，否則儀表板的關懷名單會是空的。
+      // 邀請流程沒有 6 位數配對碼，故以 pairingId 作為 pairCode 代用值。
+      await addPairedElder({
+        pairCode: String(result.pairingId),
+        name: result.elderName || '長輩',
+        age: result.elderAge || 0,
+        pairedAt: now,
+        elderId: result.elderId ? String(result.elderId) : undefined,
+      });
+
+      if (result.elderId) {
+        await AsyncStorage.setItem('backendElderId', String(result.elderId));
+      }
+      if (result.pairingId) {
+        await AsyncStorage.setItem('backendPairingId', String(result.pairingId));
+      }
+
+      // 登記本機 FCM token，讓此查看者也收得到推播（失敗不影響加入）
+      try {
+        const messaging = require('@react-native-firebase/messaging').default;
+        const {registerFamilyFcmToken} = require('../../api/notificationApi');
+        const fcmToken = await messaging().getToken();
+        if (result.pairingId && fcmToken) {
+          await registerFamilyFcmToken(String(result.pairingId), fcmToken);
+        }
+      } catch (fcmErr) {
+        console.warn('[FamilyJoinStep] FCM token 登記失敗（不影響加入）:', fcmErr);
+      }
+
       Alert.alert('加入成功！', `歡迎 ${familyName}！您已加入為查看者`, [
         {text: '開始使用', onPress: onDone},
       ]);
+    } catch (e) {
+      console.error('[FamilyJoinStep] 加入失敗:', e);
+      Alert.alert('加入失敗', '請檢查網路連線後再試一次');
     } finally {
       setLoading(false);
     }
@@ -653,7 +688,7 @@ function FamilyJoinStep({familyName, onDone}: {familyName: string; onDone: () =>
 
       <View style={s.highlightBox}>
         <Text style={s.highlightText}>
-          家屬邀請碼有效期限 24 小時，過期須向管理員重新索取{'\n'}
+          家屬邀請碼有效期限 48 小時，過期須向管理員重新索取{'\n'}
           注意：這與長輩配對碼（6 位數）不同
         </Text>
       </View>

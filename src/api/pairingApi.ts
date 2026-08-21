@@ -18,3 +18,15 @@ export const confirmPairing = async (code: string, elderDeviceId?: string) => {
   const response = await apiClient.post('/api/pairing/confirm', body);
   return response.data;
 };
+
+// 家屬端產生 8 位數家屬邀請碼（供其他家屬以查看者身分加入）
+export const generateInviteCode = async (elderId: string) => {
+  const response = await apiClient.post('/api/pairing/invite/generate', { elderId });
+  return response.data;
+};
+
+// 其他家屬輸入邀請碼加入（查看者）
+export const confirmInviteCode = async (code: string) => {
+  const response = await apiClient.post('/api/pairing/invite/confirm', { code });
+  return response.data;
+};

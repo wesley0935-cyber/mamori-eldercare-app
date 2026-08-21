@@ -23,8 +23,6 @@ export interface TryPairResult {
   profile?: ElderProfile;
 }
 
-export type VerifyInviteStatus = 'ok' | 'invalid' | 'expired';
-
 export interface FamilyProfile {
   name: string;
   familyId?: string;
@@ -60,6 +58,7 @@ const KEY_FAMILY_MEMBERS  = 'elder_family_members';
 const KEY_INVITE_CODE     = 'family_invite_code';
 
 const PAIR_CODE_EXPIRY_MS = 48 * 60 * 60 * 1000; // 48 hours
+export const INVITE_CODE_EXPIRY_MS = 48 * 60 * 60 * 1000; // 48 hours，與後端 /invite/generate 一致
 
 let _cachedElderName: string | null = null;
 
@@ -368,11 +367,36 @@ export async function getFamilyRole(): Promise<FamilyRole> {
 
 // ── Invite code ───────────────────────────────────────────────────────────────
 
-export async function generateAndSaveInviteCode(): Promise<InviteCode> {
-  const code = String(Math.floor(10000000 + Math.random() * 90000000));
-  const invite: InviteCode = { code, createdAt: new Date().toISOString() };
-  await AsyncStorage.setItem(KEY_INVITE_CODE, JSON.stringify(invite));
-  return invite;
+/**
+ * 向後端申請 8 位數家屬邀請碼並存入本機。
+ *
+ * 失敗時回傳 null（不產生本機假碼）—— 本機碼在後端不存在，
+ * 其他家屬永遠加不進來，卻沒有任何錯誤跡象。呼叫端需處理 null。
+ */
+export async function generateAndSaveInviteCode(): Promise<InviteCode | null> {
+  try {
+    const elderId = await AsyncStorage.getItem('backendElderId');
+    if (!elderId) {
+      console.error('[generateAndSaveInviteCode] 無 backendElderId，無法產生邀請碼');
+      return null;
+    }
+    const { generateInviteCode } = require('../api/pairingApi');
+    const result = await generateInviteCode(elderId);
+    if (!result?.code) {
+      console.error('[generateAndSaveInviteCode] 後端未回傳邀請碼:', JSON.stringify(result));
+      return null;
+    }
+    // 用後端 expiresAt 回推 createdAt，讓 UI 倒數與後端真實效期一致
+    const createdAt = result.expiresAt
+      ? new Date(new Date(result.expiresAt).getTime() - INVITE_CODE_EXPIRY_MS).toISOString()
+      : new Date().toISOString();
+    const invite: InviteCode = { code: String(result.code), createdAt };
+    await AsyncStorage.setItem(KEY_INVITE_CODE, JSON.stringify(invite));
+    return invite;
+  } catch (e) {
+    console.error('[generateAndSaveInviteCode] 後端產生邀請碼失敗:', e);
+    return null;
+  }
 }
 
 export async function getInviteCode(): Promise<InviteCode | null> {
@@ -382,20 +406,6 @@ export async function getInviteCode(): Promise<InviteCode | null> {
   } catch {
     return null;
   }
-}
-
-export async function verifyInviteCode(code: string): Promise<boolean> {
-  const invite = await getInviteCode();
-  if (!invite || invite.code !== code.trim()) { return false; }
-  const ageHours = (Date.now() - new Date(invite.createdAt).getTime()) / 3_600_000;
-  return ageHours <= 24;
-}
-
-export async function verifyInviteCodeStatus(code: string): Promise<VerifyInviteStatus> {
-  const invite = await getInviteCode();
-  if (!invite || invite.code !== code.trim()) { return 'invalid'; }
-  const ageHours = (Date.now() - new Date(invite.createdAt).getTime()) / 3_600_000;
-  return ageHours <= 24 ? 'ok' : 'expired';
 }
 
 // ── Full reset ────────────────────────────────────────────────────────────────

@@ -313,28 +313,34 @@ function AddElderModal({visible, onClose, onAdded}: AddElderModalProps) {
 }
 
 // ─── Invite code modal ─────────────────────────────────────────────────────────
+const INVITE_EXPIRY_HOURS = 48; // 與後端 /api/pairing/invite/generate 一致
+
 function InviteModal({visible, onClose}: {visible: boolean; onClose: () => void}) {
   const [invite, setInvite] = useState<InviteCode | null>(null);
+  const [failed, setFailed] = useState(false);
 
   const loadOrGenerate = async () => {
+    setFailed(false);
     const existing = await getInviteCode();
     if (existing) {
       const ageHours = (Date.now() - new Date(existing.createdAt).getTime()) / 3_600_000;
-      if (ageHours <= 24) { setInvite(existing); return; }
+      if (ageHours <= INVITE_EXPIRY_HOURS) { setInvite(existing); return; }
     }
     const fresh = await generateAndSaveInviteCode();
+    if (!fresh) { setFailed(true); return; }
     setInvite(fresh);
   };
 
   useEffect(() => {
     if (!visible) return;
     setInvite(null);
+    setFailed(false);
     loadOrGenerate();
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
   const hoursLeft = invite
-    ? Math.max(0, 24 - (Date.now() - new Date(invite.createdAt).getTime()) / 3_600_000)
+    ? Math.max(0, INVITE_EXPIRY_HOURS - (Date.now() - new Date(invite.createdAt).getTime()) / 3_600_000)
     : 0;
   const expiryText = hoursLeft > 1
     ? `剩餘 ${Math.floor(hoursLeft)} 小時有效`
@@ -349,7 +355,9 @@ function InviteModal({visible, onClose}: {visible: boolean; onClose: () => void}
 
   const handleRegen = async () => {
     setInvite(null);
+    setFailed(false);
     const fresh = await generateAndSaveInviteCode();
+    if (!fresh) { setFailed(true); return; }
     setInvite(fresh);
   };
 
@@ -378,12 +386,21 @@ function InviteModal({visible, onClose}: {visible: boolean; onClose: () => void}
               </View>
               <Text style={ss.inviteExpiry}>{expiryText}</Text>
             </>
+          ) : failed ? (
+            <View style={ss.inviteFailBox}>
+              <Text style={ss.inviteFailText}>
+                {'邀請碼產生失敗\n請確認網路連線後點「重新產生」再試一次'}
+              </Text>
+            </View>
           ) : (
             <Text style={ss.inviteBody}>產生中…</Text>
           )}
 
           <View style={ss.inviteBtnRow}>
-            <TouchableOpacity style={[ss.inviteBtn, ss.inviteCopyBtn]} onPress={handleCopy}>
+            <TouchableOpacity
+              style={[ss.inviteBtn, ss.inviteCopyBtn, !invite && ss.inviteBtnDisabled]}
+              onPress={handleCopy}
+              disabled={!invite}>
               <Text style={ss.inviteCopyText}>📋 複製邀請碼</Text>
             </TouchableOpacity>
             <TouchableOpacity style={[ss.inviteBtn, ss.inviteRegenBtn]} onPress={handleRegen}>
@@ -1576,4 +1593,10 @@ const ss = StyleSheet.create({
   inviteCopyText: {color: C.white, fontSize: sc(14), fontWeight: '700'},
   inviteRegenBtn: {backgroundColor: '#F3F4F6', borderWidth: 1, borderColor: '#E5E7EB'},
   inviteRegenText: {color: C.sub, fontSize: sc(14), fontWeight: '600'},
+  inviteBtnDisabled: {opacity: 0.45},
+  inviteFailBox: {
+    backgroundColor: '#FEF2F2', borderRadius: 12, padding: 14,
+    borderWidth: 1, borderColor: '#FECACA', marginBottom: 14,
+  },
+  inviteFailText: {fontSize: sc(13), color: C.sos, textAlign: 'center', lineHeight: 20},
 });
