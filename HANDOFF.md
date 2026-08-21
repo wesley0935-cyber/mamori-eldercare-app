@@ -1,7 +1,10 @@
-# HANDOFF — MAMORI「配對寫入 / iOS 推播」除錯（已歸檔）
+# HANDOFF — MAMORI「配對寫入 / iOS 推播」除錯（已歸檔 + 一項待實機驗證）
 
-> **狀態：已結案歸檔（2026-08-20）。** 本文件不再有進行中的工作項目，保留作為事後查證用的記錄。
-> 若同類問題未來復發，請從「保留備查的兩條線索」一節開始。
+> **狀態（2026-08-24）：**
+> - **「配對寫入 / iOS 推播」除錯 —— 已結案歸檔。** 保留作為事後查證用的記錄。
+>   若同類問題未來復發，請從「保留備查的兩條線索」一節開始。
+> - **「家屬邀請碼 / viewer 角色」 —— 程式碼已完成並 push，但整條前端路徑零實機驗證。**
+>   這是本文件唯一還沒收尾的工作，見「家屬邀請碼與 viewer 角色」一節的待驗證清單。
 
 ---
 
@@ -23,8 +26,10 @@ Android 長輩端產生配對碼 → iOS 家屬端輸入配對碼完成配對 �
 
 | Repo | 路徑 | HEAD | 說明 |
 |---|---|---|---|
-| 前端 `ElderCareApp` | `C:\Users\Wesley\ElderCareProject\ElderCareApp` | `a195e6a` | 已 push，與 origin 同步 |
-| 後端 `MamoriServer` | `C:\Users\Wesley\ElderCareProject\MamoriServer` | `65649d1` | 已 push，與 origin 同步 |
+| 前端 `ElderCareApp` | `C:\Users\Wesley\ElderCareProject\ElderCareApp` | `9cc98fc` | 已 push，與 origin 同步 |
+| 後端 `MamoriServer` | `C:\Users\Wesley\ElderCareProject\MamoriServer` | `214fbbf` | 已 push，與 origin 同步 |
+
+（除錯結案當下的 HEAD 是前端 `a195e6a` / 後端 `65649d1`；其後的 commit 屬於「家屬邀請碼與 viewer 角色」那條線。）
 
 - 前端 GitHub：https://github.com/wesley0935-cyber/mamori-eldercare-app
 - 後端 GitHub：https://github.com/wesley0935-cyber/mamori-server（部署於 Railway）
@@ -102,6 +107,89 @@ Can't reach database server at `maglev.proxy.rlwy.net:34689`
 
 ---
 
+## 家屬邀請碼與 viewer 角色（⚠️ 待實機驗證）
+
+> 這是本文件唯一還在進行中的工作。程式碼已完成並 push，後端經 curl 驗證通過，
+> **但前端整條路徑從未在任何實體裝置上執行過。**
+
+### 問題起因
+
+盤查「邀請其他家屬」功能時發現它**從頭到尾沒有經過後端**：
+
+- `generateAndSaveInviteCode()` 只是產生 8 位數亂數寫進 AsyncStorage，一次 API 都沒打。
+- 接收端 `FamilyJoinStep` 用 `verifyInviteCodeStatus()` 驗證，而該函式比對的是**執行它那支手機自己的** `family_invite_code`。新家屬的手機從來沒產生過邀請碼 → `getInviteCode()` 回 `null` → 一律回 `'invalid'`。
+
+因此**邀請碼在第二支手機上不可能成功**，連「加入成功」的畫面都到不了。
+
+連鎖後果：`role: 'viewer'` 的唯一寫入點就在那個不可達的分支之後，所以**沒有任何裝置曾經是 viewer**；五個畫面裡所有 viewer 判斷全是死碼，`getFamilyRole()` 實務上永遠回 `'admin'`。當時盤點也因此發現若干 viewer 分支根本沒寫完（緊急聯絡人的編輯／刪除鈕沒擋、閾值控制項沒 disable），因為它們從未被執行、也就從未被發現。
+
+### 四個 commit 各做了什麼
+
+| Commit | Repo | 內容 |
+|---|---|---|
+| `214fbbf` | 後端 | 新增 `POST /api/pairing/invite/generate`（8 位數、48 小時、建立 `role:'viewer'` 的 Pairing）與 `POST /api/pairing/invite/confirm`（驗證後**另建**一筆 Pairing 回傳其 id，邀請碼記錄保持不變以便多人共用）。同時收緊既有兩支路由：`/generate` 的 `updateMany` 加 `role:'admin'`（避免清配對碼時連邀請碼一起清掉）、`/confirm` 的查詢加 `role:'admin'`（避免邀請碼被當配對碼消耗） |
+| `4aa2609` | 前端 | `pairingApi.ts` 新增 `generateInviteCode` / `confirmInviteCode`；`generateAndSaveInviteCode()` 改打後端且**失敗回 `null` 不產生本機假碼**；`FamilyJoinStep` 改走 API，成功後補上 `addPairedElder`（否則查看者的關懷名單是空的）與 `registerFamilyFcmToken`（否則收不到推播）；刪除 `verifyInviteCode()` / `verifyInviteCodeStatus()` 兩支死碼；效期前端統一為 48 小時；`InviteModal` 補上產生失敗的狀態顯示 |
+| `207b1e7` | 前端 | 補完先前沒寫完的 viewer 唯讀：`SegmentSelector` / `HourStepper` 新增 `disabled` prop（閾值畫面 7 個控制項），`ContactCard` 新增 `isViewer` 並隱藏編輯／刪除鈕 |
+| `9cc98fc` | 前端 | 消除權限 fail-open：五個畫面的 `useState<FamilyRole>('admin')` 改為 `useState<FamilyRole \| null>(null)`；`getFamilyRole()` 讀不到時回 `'viewer'`（長輩端例外回 `'admin'`，因為長輩不適用家屬角色制度） |
+
+**判斷式分三類的規則**（改動時務必遵守，否則 fail-open 會悄悄復活）：
+
+| 用途 | 寫法 | 載入中（`null`）的行為 |
+|---|---|---|
+| 開放管理功能 | `familyRole === 'admin'` | false → 隱藏 |
+| 施加限制（disable／隱藏編輯鈕） | `familyRole !== 'admin'` | true → 鎖住 |
+| 純資訊提示（viewer 橫幅、徽章） | `familyRole === 'viewer'` | false → 不顯示假訊息 |
+
+### 驗證狀態
+
+**後端：已驗證通過。** 2026-08-21 對線上服務跑過四步 curl，全部符合預期：
+
+1. `/invite/generate` 回 8 位數 code、48 小時 `expiresAt`、`pairingId`
+2. 同一組 code confirm 兩次 → 都 `success: true`，兩次 `pairingId` **不同**，且都不等於邀請碼那筆（確認可重複使用且各自建立記錄）
+3. 假碼 → `200 {"success":false,"error":"邀請碼無效或已過期"}`
+4. 邀請碼打舊的 `/api/pairing/confirm` → `404`（確認兩種碼互不干擾）
+
+**前端：零實機驗證。** 上述四個 commit 的前端部分只經過 `tsc --noEmit` 型別檢查。**所有 viewer 分支至今從未在任何裝置上執行過**——包含 `207b1e7` 與 `9cc98fc` 補的那些唯讀邏輯。型別檢查不保證 API 回應格式、AsyncStorage 讀寫、FCM token 登記在真機上如預期。
+
+### ▶️ 待驗證清單（需三支手機）
+
+角色配置：**三星 A70 = 長輩**、**紅米 Note 5 Plus = 家屬管理員**、**iOS = 家屬查看者**（或任兩支 Android 家屬互換）。前端需重 build APK 才有這些變更。
+
+1. 三星走完長輩 onboarding，紅米以「新增長輩」完成 6 位數配對（確認既有流程沒被 `214fbbf` 的 `role:'admin'` 條件改壞）。
+2. 紅米點「邀請家屬」→ 確認顯示 8 位數碼、倒數是 **48 小時**（不是 24）。斷網再點「重新產生」→ 應顯示「邀請碼產生失敗」而**不是**卡在「產生中…」，也不該給出一組假碼。
+3. iOS 用該邀請碼走「加入現有家庭」→ 應加入成功並顯示「查看者」。**這是整條線最關鍵的一步，過去必定失敗。**
+4. iOS 進儀表板 → 關懷名單**要看得到長輩**（驗證 `addPairedElder`）。注意該筆的 `pairCode` 是用 `pairingId` 代用，畫面上「配對碼 …」那行會顯示一長串 UUID，屬已知外觀問題。
+5. iOS 檢查 viewer 唯讀是否生效：快速入口只剩「通知設定」；藥物頁無新增／編輯／刪除；閾值頁**所有** SegmentSelector 與 HourStepper 都按不動且呈半透明；緊急聯絡人頁無新增／編輯／刪除；設定頁權限徽章顯示「查看者」並出現「退出此家庭」。
+6. 觀察載入瞬間**不應**閃出管理員功能（驗證 `9cc98fc`），管理員端也**不應**閃出「您是查看者」橫幅。
+7. 三星觸發 SOS → **紅米與 iOS 都要收到推播**（驗證每位加入者各有獨立 Pairing 與 fcmToken，不會互相覆蓋）。
+8. 用同一組邀請碼讓第三支裝置再加入一次（若有），確認邀請碼可重複使用。
+
+---
+
+## 已知問題（未修復）
+
+以下為已確認存在、但刻意未處理的問題，列此備查。
+
+### 殘留的邀請碼 Pairing 記錄不會被清理
+
+`/invite/generate` 每呼叫一次就在 `Pairing` 表建立一筆記錄，過期後**不會**被任何機制清除，`code` 與 `codeExpiresAt` 就這麼留著。等於每發一次邀請碼就多一筆永久殘留。目前不影響功能——`/notification/send` 有 `fcmToken: { not: null }` 過濾，而這些記錄的 `fcmToken` 是 `null`，不會被誤發推播。長期則需要一個清理排程或在產生新碼時作廢舊碼。
+
+**目前線上已有三筆測試殘留**（2026-08-21 驗證時產生，待取得正式 `DATABASE_URL` 後清理）：
+
+| Pairing id | 用途 |
+|---|---|
+| `4664f0d6-73aa-4a2b-9c9c-dd82f589d26f` | 邀請碼記錄（`code=61123160`，已於 08-23 過期） |
+| `a668fea0-351a-4ba7-92da-5d758d150cb5` | 模擬加入 #1 |
+| `7723f916-8313-482a-8ab4-1e323124e5bb` | 模擬加入 #2 |
+
+### 同一人重複用邀請碼加入會收到重複推播
+
+`/invite/confirm` 不做去重，同一支手機用同一組邀請碼加入兩次就會產生兩筆 Pairing。兩筆都會登記到**同一個** FCM token（token 來自裝置），於是 `/notification/send` 的 `tokens` 陣列出現重複值 → 該手機每則警示會收到兩次。
+
+無法在 `/invite/confirm` 當下防堵，因為 token 是配對完成後才由前端另外送上來的，該路由看不到。可行的修法有兩處：在 `/notification/family-token` 登記時檢查同一 `elderId` 下是否已有相同 token，或在 `/notification/send` 對 tokens 做 `[...new Set(tokens)]`。後者較簡單且立即見效。
+
+---
+
 ## 診斷過程中的技術教訓（供日後除錯參考）
 
 ### 驗證 release bundle 內是否含某字串 → 必須用 UTF-16LE 搜尋
@@ -114,9 +202,26 @@ Can't reach database server at `maglev.proxy.rlwy.net:34689`
 
 作法：用 `System.IO.Compression.ZipFile` 從 APK 取出 bundle，再做 byte 搜尋。
 
-### PowerShell 5.1 會把無 BOM 的 UTF-8 `.ps1` 當 ANSI 讀
+### 🚨 不要用 PowerShell 讀寫任何含中文的檔案
 
-腳本內的中文字面值會變亂碼並產生 parser error。輔助腳本請寫純 ASCII，中文用碼點組出來（如 `[char]0x5931`）。同理，`git commit -m` 傳入非 ASCII 字元（如破折號 `—`）也可能寫入亂碼，建議 commit message 用純 ASCII 或改用 heredoc。
+**PowerShell 5.1 的 `Get-Content` 會以 ANSI 讀取 UTF-8 檔案**，再用 `Set-Content` 寫回就是整檔亂碼。
+
+實際踩過一次：想對 `ThresholdSettingsScreen.tsx` 做批次字串取代，用了
+
+```powershell
+(Get-Content $f -Raw) -replace 'a', 'b' | Set-Content $f -Encoding UTF8
+```
+
+結果整支檔案的中文全毀（`閾值設定` → `?曉潸身摰?`、`</Text>` → `??/Text>`），連 JSX 標籤都被破壞。`-Encoding UTF8` 只管寫出，救不了讀進來時就已經錯掉的內容。
+
+**正確作法：改檔案一律用 Edit 工具，不要用 PowerShell 做文字取代。** 需要一次改多處相同字串時，用 Edit 的 `replace_all`。
+
+這次是靠 `git checkout -- <file>` 從上一個 commit 還原才救回來。**若該檔案當時尚未 commit 過，就是直接損失、無法復原。**
+
+同一個編碼陷阱的其他面向：
+
+- **無 BOM 的 UTF-8 `.ps1` 腳本**同樣被當 ANSI 讀，腳本內的中文字面值會變亂碼並產生 parser error。輔助腳本請寫純 ASCII，中文用碼點組出來（如 `[char]0x5931`）。
+- **`git commit -m` 傳入非 ASCII 字元**（如破折號 `—`）可能寫入亂碼。改用 `git commit -F <file>`，訊息檔以 UTF-8 寫出（本文件的 `0da920c` 即以此方式保留了破折號）。
 
 ### 後端驗證：空 body 測不到寫入路徑
 
