@@ -37,21 +37,24 @@ function SegmentSelector<T extends string | number>({
   labels,
   value,
   onChange,
+  disabled = false,
 }: {
   options: readonly T[];
   labels: readonly string[];
   value: T;
   onChange: (v: T) => void;
+  disabled?: boolean;
 }) {
   return (
-    <View style={styles.segmentRow}>
+    <View style={[styles.segmentRow, disabled && styles.controlDisabled]}>
       {options.map((opt, i) => (
         <TouchableOpacity
           key={String(opt)}
           style={[styles.segmentBtn, value === opt && styles.segmentBtnActive]}
           onPress={() => onChange(opt)}
+          disabled={disabled}
           accessibilityRole="radio"
-          accessibilityState={{selected: value === opt}}
+          accessibilityState={{selected: value === opt, disabled}}
           accessibilityLabel={labels[i]}>
           <Text
             style={[
@@ -72,22 +75,26 @@ function HourStepper({
   label,
   value,
   onChange,
+  disabled = false,
 }: {
   label: string;
   value: number;
   onChange: (h: number) => void;
+  disabled?: boolean;
 }) {
   const dec = () => onChange((value - 1 + 24) % 24);
   const inc = () => onChange((value + 1) % 24);
   const display = `${String(value).padStart(2, '0')}:00`;
 
   return (
-    <View style={styles.stepperBox}>
+    <View style={[styles.stepperBox, disabled && styles.controlDisabled]}>
       <Text style={styles.stepperLabel}>{label}</Text>
       <View style={styles.stepperControls}>
         <TouchableOpacity
           style={styles.stepperArrowBtn}
           onPress={inc}
+          disabled={disabled}
+          accessibilityState={{disabled}}
           accessibilityLabel={`${label} 增加`}>
           <Text style={styles.stepperArrow}>▲</Text>
         </TouchableOpacity>
@@ -95,6 +102,8 @@ function HourStepper({
         <TouchableOpacity
           style={styles.stepperArrowBtn}
           onPress={dec}
+          disabled={disabled}
+          accessibilityState={{disabled}}
           accessibilityLabel={`${label} 減少`}>
           <Text style={styles.stepperArrow}>▼</Text>
         </TouchableOpacity>
@@ -224,6 +233,7 @@ export default function ThresholdSettingsScreen() {
               labels={INACTIVITY_LABELS}
               value={settings.inactivityHours}
               onChange={v => update('inactivityHours', v)}
+              disabled={familyRole === 'viewer'}
             />
           </SettingRow>
 
@@ -240,6 +250,7 @@ export default function ThresholdSettingsScreen() {
                   labels={STEP_LABELS}
                   value={settings.stepGoal}
                   onChange={v => update('stepGoal', v)}
+                  disabled={familyRole === 'viewer'}
                 />
               </SettingRow>
             </>
@@ -257,6 +268,7 @@ export default function ThresholdSettingsScreen() {
               labels={BATTERY_LABELS}
               value={settings.lowBatteryPct}
               onChange={v => update('lowBatteryPct', v)}
+              disabled={familyRole === 'viewer'}
             />
           </SettingRow>
 
@@ -272,6 +284,7 @@ export default function ThresholdSettingsScreen() {
               labels={MEDICINE_LABELS}
               value={settings.missedMedicineHours}
               onChange={v => update('missedMedicineHours', v)}
+              disabled={familyRole === 'viewer'}
             />
           </SettingRow>
 
@@ -287,6 +300,7 @@ export default function ThresholdSettingsScreen() {
                 label="開始時間"
                 value={settings.sleepStartHour}
                 onChange={v => update('sleepStartHour', v)}
+                disabled={familyRole === 'viewer'}
               />
               <View style={styles.sleepDash}>
                 <Text style={styles.sleepDashText}>至</Text>
@@ -295,6 +309,7 @@ export default function ThresholdSettingsScreen() {
                 label="結束時間"
                 value={settings.sleepEndHour}
                 onChange={v => update('sleepEndHour', v)}
+                disabled={familyRole === 'viewer'}
               />
             </View>
           </SettingRow>
@@ -312,6 +327,7 @@ export default function ThresholdSettingsScreen() {
                   labels={FALL_LABELS}
                   value={settings.fallDetectionSensitivity}
                   onChange={v => update('fallDetectionSensitivity', v)}
+                  disabled={familyRole === 'viewer'}
                 />
               </SettingRow>
             </>
@@ -364,6 +380,10 @@ const styles = StyleSheet.create({
   },
   saveBtnDisabled: {
     backgroundColor: 'transparent',
+  },
+  // 查看者（viewer）唯讀時，用於 SegmentSelector / HourStepper 的淡化樣式
+  controlDisabled: {
+    opacity: 0.5,
   },
   saveBtnText: {color: COLORS.white, fontSize: 15, fontWeight: '700'},
   saveBtnTextDisabled: {color: 'rgba(255,255,255,0.4)'},

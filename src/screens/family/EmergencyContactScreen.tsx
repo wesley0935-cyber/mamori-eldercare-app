@@ -213,10 +213,12 @@ function ContactCard({
   contact,
   onEdit,
   onDelete,
+  isViewer,
 }: {
   contact: EmergencyContact;
   onEdit: () => void;
   onDelete: () => void;
+  isViewer: boolean;
 }) {
   return (
     <View style={styles.contactCard}>
@@ -239,22 +241,24 @@ function ContactCard({
           <Text style={styles.contactPhone}>{contact.phone}</Text>
         </View>
       </View>
-      <View style={styles.contactActions}>
-        <TouchableOpacity
-          style={styles.editBtn}
-          onPress={onEdit}
-          accessibilityRole="button"
-          accessibilityLabel={`編輯 ${contact.name}`}>
-          <Text style={styles.editBtnText}>編輯</Text>
-        </TouchableOpacity>
-        <TouchableOpacity
-          style={styles.deleteBtn}
-          onPress={onDelete}
-          accessibilityRole="button"
-          accessibilityLabel={`刪除 ${contact.name}`}>
-          <Text style={styles.deleteBtnText}>刪除</Text>
-        </TouchableOpacity>
-      </View>
+      {!isViewer && (
+        <View style={styles.contactActions}>
+          <TouchableOpacity
+            style={styles.editBtn}
+            onPress={onEdit}
+            accessibilityRole="button"
+            accessibilityLabel={`編輯 ${contact.name}`}>
+            <Text style={styles.editBtnText}>編輯</Text>
+          </TouchableOpacity>
+          <TouchableOpacity
+            style={styles.deleteBtn}
+            onPress={onDelete}
+            accessibilityRole="button"
+            accessibilityLabel={`刪除 ${contact.name}`}>
+            <Text style={styles.deleteBtnText}>刪除</Text>
+          </TouchableOpacity>
+        </View>
+      )}
     </View>
   );
 }
@@ -435,6 +439,7 @@ export default function EmergencyContactScreen() {
               contact={c}
               onEdit={() => openEdit(c)}
               onDelete={() => handleDelete(c)}
+              isViewer={familyRole === 'viewer'}
             />
           ))
         )}
