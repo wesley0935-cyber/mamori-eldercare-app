@@ -181,7 +181,8 @@ export default function SettingsScreen() {
     lowBattery: true,
   });
   const [currentRole, setCurrentRole] = useState<AppRole | null>(null);
-  const [familyRole, setFamilyRole] = useState<FamilyRole>('admin');
+  // null = 角色尚未載入。權限判斷一律以 'admin' 為門檻，避免載入期間 fail-open
+  const [familyRole, setFamilyRole] = useState<FamilyRole | null>(null);
   const [resetModalVisible, setResetModalVisible] = useState(false);
   const [confirmText, setConfirmText] = useState('');
   const [resetting, setResetting] = useState(false);
@@ -329,7 +330,7 @@ export default function SettingsScreen() {
               {currentRole ? ROLE_LABELS[currentRole] : '—'}
             </Text>
           </View>
-          {currentRole === 'family' && (
+          {currentRole === 'family' && familyRole !== null && (
             <>
               <View style={styles.divider} />
               <View style={styles.aboutRow}>

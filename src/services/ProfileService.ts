@@ -360,9 +360,20 @@ export async function incrementElderFamilyCount(): Promise<number> {
 
 // ── Family role ───────────────────────────────────────────────────────────────
 
+/**
+ * 取得家屬角色。讀不到時保守回 'viewer'，避免權限 fail-open。
+ *
+ * - profile 存在：沿用其 role；舊版資料可能沒有 role 欄位，視為 'admin'
+ *   （'viewer' 只可能由邀請碼流程寫入，而該流程一定會帶 role）
+ * - profile 不存在且身分是長輩：長輩端不適用家屬角色制度，回 'admin'，
+ *   否則長輩自己的畫面會被誤判成唯讀
+ * - 其餘（家屬端但讀不到 profile）：保守回 'viewer'
+ */
 export async function getFamilyRole(): Promise<FamilyRole> {
   const profile = await getFamilyProfile();
-  return profile?.role ?? 'admin';
+  if (profile) { return profile.role ?? 'admin'; }
+  const appRole = await getAppRole();
+  return appRole === 'elder' ? 'admin' : 'viewer';
 }
 
 // ── Invite code ───────────────────────────────────────────────────────────────

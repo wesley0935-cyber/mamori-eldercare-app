@@ -158,7 +158,8 @@ export default function ThresholdSettingsScreen() {
   const navigation = useNavigation();
   const [settings, setSettings] = useState<ThresholdSettings>(THRESHOLD_DEFAULTS);
   const [dirty, setDirty] = useState(false);
-  const [familyRole, setFamilyRole] = useState<FamilyRole>('admin');
+  // null = 角色尚未載入。權限判斷一律以 'admin' 為門檻，避免載入期間 fail-open
+  const [familyRole, setFamilyRole] = useState<FamilyRole | null>(null);
   const [appRole, setAppRole] = useState<AppRole | null>(null);
 
   const load = useCallback(async () => {
@@ -200,12 +201,12 @@ export default function ThresholdSettingsScreen() {
         </TouchableOpacity>
         <Text style={styles.headerTitle}>閾值設定</Text>
         <TouchableOpacity
-          style={[styles.saveBtn, (!dirty || familyRole === 'viewer') && styles.saveBtnDisabled]}
-          onPress={familyRole === 'viewer' ? undefined : handleSave}
-          disabled={!dirty || familyRole === 'viewer'}
+          style={[styles.saveBtn, (!dirty || familyRole !== 'admin') && styles.saveBtnDisabled]}
+          onPress={familyRole !== 'admin' ? undefined : handleSave}
+          disabled={!dirty || familyRole !== 'admin'}
           accessibilityRole="button"
           accessibilityLabel="儲存設定">
-          <Text style={[styles.saveBtnText, (!dirty || familyRole === 'viewer') && styles.saveBtnTextDisabled]}>
+          <Text style={[styles.saveBtnText, (!dirty || familyRole !== 'admin') && styles.saveBtnTextDisabled]}>
             儲存
           </Text>
         </TouchableOpacity>
@@ -233,7 +234,7 @@ export default function ThresholdSettingsScreen() {
               labels={INACTIVITY_LABELS}
               value={settings.inactivityHours}
               onChange={v => update('inactivityHours', v)}
-              disabled={familyRole === 'viewer'}
+              disabled={familyRole !== 'admin'}
             />
           </SettingRow>
 
@@ -250,7 +251,7 @@ export default function ThresholdSettingsScreen() {
                   labels={STEP_LABELS}
                   value={settings.stepGoal}
                   onChange={v => update('stepGoal', v)}
-                  disabled={familyRole === 'viewer'}
+                  disabled={familyRole !== 'admin'}
                 />
               </SettingRow>
             </>
@@ -268,7 +269,7 @@ export default function ThresholdSettingsScreen() {
               labels={BATTERY_LABELS}
               value={settings.lowBatteryPct}
               onChange={v => update('lowBatteryPct', v)}
-              disabled={familyRole === 'viewer'}
+              disabled={familyRole !== 'admin'}
             />
           </SettingRow>
 
@@ -284,7 +285,7 @@ export default function ThresholdSettingsScreen() {
               labels={MEDICINE_LABELS}
               value={settings.missedMedicineHours}
               onChange={v => update('missedMedicineHours', v)}
-              disabled={familyRole === 'viewer'}
+              disabled={familyRole !== 'admin'}
             />
           </SettingRow>
 
@@ -300,7 +301,7 @@ export default function ThresholdSettingsScreen() {
                 label="開始時間"
                 value={settings.sleepStartHour}
                 onChange={v => update('sleepStartHour', v)}
-                disabled={familyRole === 'viewer'}
+                disabled={familyRole !== 'admin'}
               />
               <View style={styles.sleepDash}>
                 <Text style={styles.sleepDashText}>至</Text>
@@ -309,7 +310,7 @@ export default function ThresholdSettingsScreen() {
                 label="結束時間"
                 value={settings.sleepEndHour}
                 onChange={v => update('sleepEndHour', v)}
-                disabled={familyRole === 'viewer'}
+                disabled={familyRole !== 'admin'}
               />
             </View>
           </SettingRow>
@@ -327,14 +328,14 @@ export default function ThresholdSettingsScreen() {
                   labels={FALL_LABELS}
                   value={settings.fallDetectionSensitivity}
                   onChange={v => update('fallDetectionSensitivity', v)}
-                  disabled={familyRole === 'viewer'}
+                  disabled={familyRole !== 'admin'}
                 />
               </SettingRow>
             </>
           )}
         </View>
 
-        {dirty && familyRole !== 'viewer' && (
+        {dirty && familyRole === 'admin' && (
           <TouchableOpacity
             style={styles.floatSaveBtn}
             onPress={handleSave}

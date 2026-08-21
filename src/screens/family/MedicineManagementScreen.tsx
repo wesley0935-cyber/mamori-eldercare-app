@@ -241,7 +241,8 @@ export default function MedicineManagementScreen() {
   const [takenState, setTakenState] = useState<DailyTakenState>({});
   const [modalVisible, setModalVisible] = useState(false);
   const [editTarget, setEditTarget] = useState<Medication | null>(null);
-  const [familyRole, setFamilyRole] = useState<FamilyRole>('admin');
+  // null = 角色尚未載入。權限判斷一律以 'admin' 為門檻，避免載入期間 fail-open
+  const [familyRole, setFamilyRole] = useState<FamilyRole | null>(null);
 
   // 載入已配對長輩清單
   useEffect(() => {
@@ -379,7 +380,7 @@ export default function MedicineManagementScreen() {
                   onEdit={() => openEdit(med)}
                   onDelete={() => handleDelete(med.id)}
                   onCancelTaken={() => handleCancelTaken(med)}
-                  isViewer={familyRole === 'viewer'}
+                  isViewer={familyRole !== 'admin'}
                 />
                 {idx < meds.length - 1 && <View style={styles.divider} />}
               </View>

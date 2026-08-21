@@ -270,7 +270,8 @@ export default function EmergencyContactScreen() {
   const [contacts, setContacts] = useState<EmergencyContact[]>([]);
   const [modalVisible, setModalVisible] = useState(false);
   const [editing, setEditing] = useState<EmergencyContact | null>(null);
-  const [familyRole, setFamilyRole] = useState<FamilyRole>('admin');
+  // null = 角色尚未載入。權限判斷一律以 'admin' 為門檻，避免載入期間 fail-open
+  const [familyRole, setFamilyRole] = useState<FamilyRole | null>(null);
 
   const load = useCallback(async () => {
     const [list, role] = await Promise.all([getEmergencyContacts(), getFamilyRole()]);
@@ -398,7 +399,7 @@ export default function EmergencyContactScreen() {
             </Text>
           </TouchableOpacity>
         )}
-        {familyRole === 'viewer' && <View style={styles.addBtn} />}
+        {familyRole !== 'admin' && <View style={styles.addBtn} />}
       </View>
 
       <ScrollView
@@ -439,7 +440,7 @@ export default function EmergencyContactScreen() {
               contact={c}
               onEdit={() => openEdit(c)}
               onDelete={() => handleDelete(c)}
-              isViewer={familyRole === 'viewer'}
+              isViewer={familyRole !== 'admin'}
             />
           ))
         )}

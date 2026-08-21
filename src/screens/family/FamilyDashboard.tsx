@@ -883,7 +883,8 @@ export default function FamilyDashboard() {
   const [elders, setElders] = useState<PairedElder[]>([]);
   const [showAddModal, setShowAddModal] = useState(false);
   const [showInviteModal, setShowInviteModal] = useState(false);
-  const [familyRole, setFamilyRole] = useState<FamilyRole>('admin');
+  // null = 角色尚未載入。權限判斷一律以 'admin' 為門檻，避免載入期間 fail-open
+  const [familyRole, setFamilyRole] = useState<FamilyRole | null>(null);
   const [familyMembers, setFamilyMembers] = useState<FamilyMember[]>([]);
   const [elderToRemove, setElderToRemove] = useState<PairedElder | null>(null);
   const [memberToRemove, setMemberToRemove] = useState<FamilyMember | null>(null);
@@ -1055,8 +1056,8 @@ export default function FamilyDashboard() {
           </TouchableOpacity>
         </View>
 
-        {/* 快速入口 */}
-        {familyRole === 'admin' ? (
+        {/* 快速入口 —— 角色未載入時整區不渲染，避免先畫精簡版再展開造成跳動 */}
+        {familyRole === null ? null : familyRole === 'admin' ? (
           <View style={styles.quickRow}>
             <TouchableOpacity style={styles.quickBtn} onPress={() => setShowAddModal(true)}>
               <Text style={styles.quickBtnIcon}>➕</Text>
