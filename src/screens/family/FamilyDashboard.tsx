@@ -18,6 +18,7 @@ import {useNavigation, useFocusEffect} from '@react-navigation/native';
 import type {StackNavigationProp} from '@react-navigation/stack';
 import notifee, {AuthorizationStatus} from '@notifee/react-native';
 import QRCode from 'react-native-qrcode-svg';
+import FamilyQRScanner from '../../components/FamilyQRScanner';
 import type {RootStackParamList} from '../../navigation/AppNavigator';
 import {
   getPairedElders,
@@ -32,8 +33,6 @@ import {
   generateAndSaveInviteCode,
   getInviteCode,
   generatePairCode,
-  generateAndSavePairCode,
-  setElderProfile,
   confirmPairingWithCode,
   type PairedElder,
   type FamilyMember,
@@ -41,7 +40,6 @@ import {
   type InviteCode,
   type ElderProfile,
 } from '../../services/ProfileService';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import StepTrendChart from '../../components/StepTrendChart';
 import {
   loadAlerts,
@@ -77,78 +75,55 @@ interface AddElderModalProps {
 }
 
 function AddElderModal({visible, onClose, onAdded}: AddElderModalProps) {
-  const [step, setStep] = useState<'form' | 'display'>('form');
-  const [elderName, setElderName] = useState('');
-  const [elderAge, setElderAge] = useState('');
-  const [pairCode, setPairCode] = useState('');
-  const [codeCreatedAt, setCodeCreatedAt] = useState(Date.now());
+  // 配對方向：長輩端 onboarding 產生配對碼並顯示，家屬端在此掃描或手動輸入。
+  const [step, setStep] = useState<'input' | 'scan' | 'confirm'>('input');
+  const [code, setCode] = useState('');
+  const [found, setFound] = useState<ElderProfile | null>(null);
   const [loading, setLoading] = useState(false);
-  const [regenerating, setRegenerating] = useState(false);
 
   const reset = () => {
-    setStep('form');
-    setElderName('');
-    setElderAge('');
-    setPairCode('');
-    setCodeCreatedAt(Date.now());
+    setStep('input');
+    setCode('');
+    setFound(null);
     setLoading(false);
-    setRegenerating(false);
   };
 
   const handleClose = () => { reset(); onClose(); };
 
-  const handleGenerate = async () => {
-    const name = elderName.trim();
-    const age = parseInt(elderAge, 10);
-    if (!name) { Alert.alert('請輸入長輩姓名'); return; }
-    if (!elderAge || isNaN(age) || age < 1 || age > 120) {
-      Alert.alert('請輸入有效的年齡（1–120）');
-      return;
-    }
+  const handleVerify = async (c: string) => {
     setLoading(true);
     try {
-      const record = await generateAndSavePairCode();
-      const profile: ElderProfile = {name, age, pairCode: record.code};
-      await setElderProfile(profile);
-      setPairCode(record.code);
-      setCodeCreatedAt(record.createdAt);
-      setStep('display');
+      const result = await confirmPairingWithCode(c);
+      if (result.status === 'expired') {
+        Alert.alert('配對碼已過期', '請請長輩重新產生配對碼');
+        setStep('input');
+        return;
+      }
+      if (result.status !== 'ok' || !result.profile) {
+        Alert.alert('配對碼無效', '請確認長輩手機上顯示的配對碼是否正確');
+        setStep('input');
+        return;
+      }
+      setCode(c);
+      setFound(result.profile);
+      setStep('confirm');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleRegenerate = async () => {
-    if (regenerating) return;
-    setRegenerating(true);
-    try {
-      const record = await generateAndSavePairCode();
-      const name = elderName.trim();
-      const age = parseInt(elderAge, 10);
-      await setElderProfile({name, age, pairCode: record.code});
-      setPairCode(record.code);
-      setCodeCreatedAt(record.createdAt);
-    } finally {
-      setRegenerating(false);
-    }
-  };
-
   const handleConfirmPaired = async () => {
+    if (!found) { return; }
     setLoading(true);
     try {
       const now = new Date().toISOString();
-      const pairedResult = await confirmPairingWithCode(pairCode);
-      let elderId = pairedResult.profile?.elderId ?? undefined;
-      if (!elderId) {
-        const fallback = await AsyncStorage.getItem('backendElderId');
-        elderId = fallback ?? undefined;
-      }
+      // 姓名與年齡由後端回傳（長輩端 onboarding 時填寫），不在此手動輸入
       const newElder: PairedElder = {
-        pairCode,
-        name: elderName.trim(),
-        age: parseInt(elderAge, 10),
+        pairCode: code,
+        name: found.name,
+        age: found.age,
         pairedAt: now,
-        elderId: elderId ?? undefined,
+        elderId: found.elderId ?? undefined,
       };
       await addPairedElder(newElder);
       const fp = await getFamilyProfile();
@@ -160,25 +135,7 @@ function AddElderModal({visible, onClose, onAdded}: AddElderModalProps) {
           role: fp.role,
         });
       }
-
-      // 登記家屬裝置 FCM token，確保後續推播能收到
-      try {
-        const pairingId = await AsyncStorage.getItem('backendPairingId');
-        if (pairingId) {
-          const messaging = require('@react-native-firebase/messaging').default;
-          const { registerFamilyFcmToken } = require('../../api/notificationApi');
-          const fcmToken = await messaging().getToken();
-          if (fcmToken) {
-            await registerFamilyFcmToken(pairingId, fcmToken);
-            console.log('[FamilyDashboard] 家屬 FCM token 已登記 pairingId:', pairingId);
-          }
-        } else {
-          console.warn('[FamilyDashboard] 無 backendPairingId，FCM token 未登記');
-        }
-      } catch (fcmErr) {
-        console.warn('[FamilyDashboard] FCM token 登記失敗（不影響配對）:', fcmErr);
-      }
-
+      // FCM token 登記由 confirmPairingWithCode() 內部完成，此處不重複執行
       reset();
       onAdded(newElder);
     } finally {
@@ -186,126 +143,94 @@ function AddElderModal({visible, onClose, onAdded}: AddElderModalProps) {
     }
   };
 
-  const handleShare = async () => {
-    try {
-      await Share.share({message: `長輩配對碼：${pairCode}`});
-    } catch {}
-  };
-
-  const qrData = JSON.stringify({code: pairCode});
-  const hoursLeft = Math.max(
-    0,
-    Math.ceil((codeCreatedAt + 48 * 3_600_000 - Date.now()) / 3_600_000),
-  );
+  if (step === 'scan') {
+    return (
+      <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={() => setStep('input')}>
+        <FamilyQRScanner
+          onFound={c => handleVerify(c)}
+          onClose={() => setStep('input')}
+        />
+      </Modal>
+    );
+  }
 
   return (
     <Modal visible={visible} animationType="slide" transparent={false} onRequestClose={handleClose}>
       <View style={ss.modalRoot}>
         <View style={ss.modalHeader}>
           <TouchableOpacity
-            onPress={step === 'display' ? () => setStep('form') : handleClose}
+            onPress={step === 'confirm' ? () => { setFound(null); setStep('input'); } : handleClose}
             style={ss.modalBack}>
-            <Text style={ss.modalBackText}>{step === 'display' ? '←' : '✕'}</Text>
+            <Text style={ss.modalBackText}>{step === 'confirm' ? '←' : '✕'}</Text>
           </TouchableOpacity>
           <Text style={ss.modalHeaderTitle}>新增關懷長輩</Text>
           <View style={ss.modalBack} />
         </View>
 
-        {step === 'form' ? (
+        {step === 'confirm' && found ? (
+          <ScrollView contentContainerStyle={ss.displayScroll}>
+            <View style={ss.confirmCard}>
+              <Text style={ss.confirmIcon}>👴</Text>
+              <Text style={ss.confirmName}>{found.name}</Text>
+              <Text style={ss.confirmAge}>{found.age} 歲</Text>
+            </View>
+            <Text style={ss.formHint}>請確認這是正確的長輩資料</Text>
+            <TouchableOpacity
+              style={[ss.primaryBtn, loading && ss.primaryBtnBusy]}
+              onPress={handleConfirmPaired}
+              disabled={loading}>
+              <Text style={ss.primaryBtnText}>
+                {loading ? '加入中…' : '確認，加入名單'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={ss.ghostBtn}
+              onPress={() => { setFound(null); setCode(''); setStep('input'); }}>
+              <Text style={ss.ghostBtnText}>不是，重新輸入</Text>
+            </TouchableOpacity>
+          </ScrollView>
+        ) : (
           <KeyboardAvoidingView
             behavior={Platform.OS === 'ios' ? 'padding' : undefined}
             style={ss.formArea}>
             <ScrollView
               contentContainerStyle={ss.formScroll}
               keyboardShouldPersistTaps="handled">
-              <Text style={ss.formTitle}>請輸入長輩資料</Text>
+              <View style={[ss.codeBadge, {backgroundColor: '#E3EBF4', alignSelf: 'center'}]}>
+                <Text style={[ss.codeBadgeText, {color: C.primary}]}>長輩配對碼・6 位數</Text>
+              </View>
+              <Text style={ss.formTitle}>輸入長輩配對碼</Text>
               <Text style={ss.formHint}>
-                家屬端產生配對碼，再請長輩手機掃描 QR Code 完成配對
+                請在長輩的手機上開啟默伴守護，完成長輩設定後，畫面會顯示 6 位數配對碼與 QR Code
               </Text>
-              <Text style={ss.formLabel}>長輩姓名</Text>
               <TextInput
-                style={ss.formInput}
-                value={elderName}
-                onChangeText={setElderName}
-                placeholder="例：王奶奶"
-                placeholderTextColor="#9CA3AF"
-                maxLength={20}
-              />
-              <Text style={ss.formLabel}>年齡</Text>
-              <TextInput
-                style={ss.formInput}
-                value={elderAge}
-                onChangeText={setElderAge}
-                placeholder="例：75"
+                style={[ss.formInput, ss.codeInput]}
+                value={code}
+                onChangeText={t => setCode(t.replace(/\D/g, '').slice(0, 6))}
+                placeholder="000000"
                 placeholderTextColor="#9CA3AF"
                 keyboardType="number-pad"
-                maxLength={3}
+                maxLength={6}
+                returnKeyType="done"
+                onSubmitEditing={() => { if (code.length === 6) { handleVerify(code); } }}
+                accessibilityLabel="長輩配對碼"
               />
               <TouchableOpacity
-                style={[ss.primaryBtn, loading && ss.primaryBtnBusy]}
-                onPress={handleGenerate}
-                disabled={loading}>
+                style={[ss.primaryBtn, (loading || code.length !== 6) && ss.primaryBtnBusy]}
+                onPress={() => handleVerify(code)}
+                disabled={loading || code.length !== 6}>
                 <Text style={ss.primaryBtnText}>
-                  {loading ? '產生中…' : '產生配對碼 →'}
+                  {loading ? '配對中…' : '確認配對'}
                 </Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={ss.scanEntryBtn}
+                onPress={() => setStep('scan')}
+                disabled={loading}>
+                <Text style={ss.scanEntryBtnText}>📷 掃描 QR Code</Text>
               </TouchableOpacity>
             </ScrollView>
           </KeyboardAvoidingView>
-        ) : (
-          <ScrollView contentContainerStyle={ss.displayScroll}>
-            <View style={ss.qrSection}>
-              <View style={[ss.codeBadge, {backgroundColor: '#E3EBF4'}]}>
-                <Text style={[ss.codeBadgeText, {color: C.primary}]}>長輩配對碼・6 位數</Text>
-              </View>
-              <Text style={ss.qrInstruction}>
-                請在長輩手機上掃描此 QR Code
-              </Text>
-              <Text style={ss.qrDesc}>此碼僅用於綁定長輩裝置，與家屬邀請碼不同</Text>
-              {/* Expiry badge */}
-              <View style={[ss.expiryBadge, hoursLeft < 12 && {borderColor: '#C0392B'}]}>
-                <Text style={[ss.expiryText, hoursLeft < 12 && {color: '#C0392B'}]}>
-                  {hoursLeft > 0
-                    ? `有效期限：剩餘 ${hoursLeft} 小時`
-                    : '配對碼已過期，請重新產生'}
-                </Text>
-              </View>
-              <View style={ss.qrBox}>
-                <QRCode value={qrData} size={200} />
-              </View>
-              <Text style={ss.qrOrText}>— 或輸入以下備用配對碼 —</Text>
-              <View style={[ss.codeBadge, {backgroundColor: '#E3EBF4'}]}>
-                <Text style={[ss.codeBadgeText, {color: C.primary}]}>長輩配對碼・6 位數</Text>
-              </View>
-              <View style={ss.codeDisplayBox}>
-                <Text style={ss.codeDisplayText}>{pairCode}</Text>
-              </View>
-              <Text style={ss.codeHint}>在長輩手機「輸入長輩配對碼」頁面輸入</Text>
-              <TouchableOpacity style={ss.shareBtn} onPress={handleShare}>
-                <Text style={ss.shareBtnText}>📤 分享配對碼</Text>
-              </TouchableOpacity>
-              {/* Regenerate button */}
-              <TouchableOpacity
-                style={[ss.regenBtn, regenerating && {opacity: 0.5}]}
-                onPress={handleRegenerate}
-                disabled={regenerating}>
-                <Text style={ss.regenBtnText}>
-                  {regenerating ? '產生中...' : '🔄 重新產生配對碼'}
-                </Text>
-              </TouchableOpacity>
-            </View>
-
-            <TouchableOpacity
-              style={[ss.primaryBtn, loading && ss.primaryBtnBusy]}
-              onPress={handleConfirmPaired}
-              disabled={loading}>
-              <Text style={ss.primaryBtnText}>
-                {loading ? '配對中…' : '長輩已完成設定，配對完成'}
-              </Text>
-            </TouchableOpacity>
-            <TouchableOpacity style={ss.ghostBtn} onPress={() => setStep('form')}>
-              <Text style={ss.ghostBtnText}>重新輸入資料</Text>
-            </TouchableOpacity>
-          </ScrollView>
         )}
       </View>
     </Modal>
@@ -1595,6 +1520,26 @@ const ss = StyleSheet.create({
   inviteRegenBtn: {backgroundColor: '#F3F4F6', borderWidth: 1, borderColor: '#E5E7EB'},
   inviteRegenText: {color: C.sub, fontSize: sc(14), fontWeight: '600'},
   inviteBtnDisabled: {opacity: 0.45},
+  // 新增長輩：輸入配對碼 / 掃描入口 / 確認卡片
+  codeInput: {
+    fontSize: 30, fontWeight: '800', letterSpacing: 8,
+    textAlign: 'center', color: C.ink,
+  },
+  scanEntryBtn: {
+    borderRadius: 14, paddingVertical: 16, alignItems: 'center',
+    borderWidth: 2, borderColor: C.primary, marginTop: 12, minHeight: 54,
+    justifyContent: 'center',
+  },
+  scanEntryBtnText: {color: C.primary, fontSize: sc(15), fontWeight: '700'},
+  confirmCard: {
+    backgroundColor: C.card, borderRadius: 16, paddingVertical: 28,
+    alignItems: 'center', marginBottom: 16,
+    shadowColor: '#000', shadowOffset: {width: 0, height: 2},
+    shadowOpacity: 0.07, shadowRadius: 8, elevation: 3,
+  },
+  confirmIcon: {fontSize: 52, marginBottom: 10},
+  confirmName: {fontSize: sc(22), fontWeight: '800', color: C.ink},
+  confirmAge: {fontSize: sc(15), color: C.sub, marginTop: 4},
   inviteFailBox: {
     backgroundColor: '#FEF2F2', borderRadius: 12, padding: 14,
     borderWidth: 1, borderColor: '#FECACA', marginBottom: 14,

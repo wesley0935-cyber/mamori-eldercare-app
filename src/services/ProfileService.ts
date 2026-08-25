@@ -57,7 +57,6 @@ const KEY_PAIRED_ELDERS   = 'paired_elders';
 const KEY_FAMILY_MEMBERS  = 'elder_family_members';
 const KEY_INVITE_CODE     = 'family_invite_code';
 
-const PAIR_CODE_EXPIRY_MS = 48 * 60 * 60 * 1000; // 48 hours
 export const INVITE_CODE_EXPIRY_MS = 48 * 60 * 60 * 1000; // 48 hours，與後端 /invite/generate 一致
 
 let _cachedElderName: string | null = null;
@@ -221,38 +220,6 @@ export async function updateElderPairCode(oldCode: string, newCode: string): Pro
   const updated = list.map(e => e.pairCode === oldCode ? { ...e, pairCode: newCode } : e);
   await AsyncStorage.setItem(KEY_PAIRED_ELDERS, JSON.stringify(updated));
   return updated;
-}
-
-// ── Try pair with code (elder side) ──────────────────────────────────────────
-
-export async function tryPairWithCode(code: string): Promise<TryPairResult> {
-  try {
-    const { confirmPairing } = require('../api/pairingApi');
-    const deviceId = await getOrCreateDeviceId();
-    const result = await confirmPairing(code.trim(), deviceId);
-
-    if (result?.success) {
-      const profile: ElderProfile = {
-        name: result.elderName || '長輩',
-        age: result.elderAge || 0,
-        pairCode: code.trim(),
-      };
-      await setElderProfile(profile);
-      await AsyncStorage.setItem('isPaired', 'true');
-      return { status: 'ok', profile };
-    }
-
-    if (result?.message?.includes('過期') || result?.error?.includes('過期')) {
-      return { status: 'expired' };
-    }
-    return { status: 'invalid' };
-  } catch (e) {
-    const profile = await getElderProfile();
-    if (!profile || profile.pairCode !== code.trim()) { return { status: 'invalid' }; }
-    const record = await getElderPairCodeRecord();
-    if (record && Date.now() - record.createdAt > PAIR_CODE_EXPIRY_MS) { return { status: 'expired' }; }
-    return { status: 'ok', profile };
-  }
 }
 
 // ── confirmPairingWithCode（家屬端配對）────────────────────────────────────────

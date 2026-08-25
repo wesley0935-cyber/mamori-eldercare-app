@@ -170,6 +170,37 @@ Can't reach database server at `maglev.proxy.rlwy.net:34689`
 
 以下為已確認存在、但刻意未處理的問題，列此備查。
 
+### 🔴 多長輩情境下，藥物與緊急聯絡人會指向錯誤的長輩
+
+`backendElderId` 是 AsyncStorage 裡的**單一全域鍵**，每次完成配對就被覆蓋成最新那位長輩。但下列功能全都讀這個全域值，**完全忽略畫面上當前選擇的長輩**：
+
+| 位置 | 行為 |
+|---|---|
+| `MedicationStorageService` 的 `getMedications` / `addMedication` / `updateMedication` / `deleteMedication` | 四支都呼叫內部的 `getBackendElderId()`。函式簽章雖有 `elderId` 參數，但**只用於本機 fallback，後端呼叫一律用全域值** |
+| `EmergencyContactService` | 同樣讀全域值 |
+| `generateAndSaveInviteCode()` | 同樣讀全域值（邀請碼永遠綁最後配對的長輩） |
+
+**實際後果**：家屬配對長輩 A、再配對長輩 B（全域值變成 B）之後，在藥物管理頁把 tab 切到 A，讀到的是 **B 的藥物**；新增一筆藥物會寫進 **B** 的清單。緊急聯絡人同理。畫面上的長輩 tab（`selectedElderId = elder.pairCode`）對後端查詢毫無作用。
+
+`StepTrendChart` 是唯一例外——它吃 `elderId` prop（來自 `PairedElder.elderId`），所以步數趨勢正確分長輩。
+
+**資料其實是齊的**：`PairedElder` 清單每筆都存了自己的 `elderId`，只是那些 service 沒有使用。修法方向是把 `MedicationStorageService` / `EmergencyContactService` 的簽章改成強制傳入 `elderId`，由畫面從 `PairedElder.elderId` 提供，並廢除 `backendElderId` 在家屬端的用途（長輩端仍需保留，那裡它代表「自己」）。牽涉四到五支檔案。
+
+> 註：此問題**早於**配對路徑改造就存在，`AddElderModal` 改走掃描流程並未使其惡化，也未修復它。
+
+### 🔴 「重新綁定裝置」產生的是後端不存在的假碼
+
+`FamilyDashboard.tsx` 的 `ElderDetailModal.handleConfirmRebind`（長輩換手機時使用）：
+
+```typescript
+const code = await generatePairCode();          // ← 純本機雜湊，完全沒打後端
+await updateElderPairCode(elder.pairCode, code);
+```
+
+`generatePairCode()` 是本機雜湊函式，產生的 6 位數碼後端並不知道。畫面接著顯示這組碼的 QR 要長輩掃描，但（a）長輩端沒有掃描器也沒有輸入配對碼的頁面，（b）就算有，後端也查不到這組碼。**此功能目前不可能運作。**
+
+這與當初邀請碼的毛病是同一類：本機產碼偽裝成後端功能。修法應改為呼叫後端產生新配對碼，但牽涉「長輩換手機」情境的完整設計（舊 Elder 記錄如何轉移、`Elder.deviceId` 如何更新），尚未規劃。
+
 ### 殘留的邀請碼 Pairing 記錄不會被清理
 
 `/invite/generate` 每呼叫一次就在 `Pairing` 表建立一筆記錄，過期後**不會**被任何機制清除，`code` 與 `codeExpiresAt` 就這麼留著。等於每發一次邀請碼就多一筆永久殘留。目前不影響功能——`/notification/send` 有 `fcmToken: { not: null }` 過濾，而這些記錄的 `fcmToken` 是 `null`，不會被誤發推播。長期則需要一個清理排程或在產生新碼時作廢舊碼。
