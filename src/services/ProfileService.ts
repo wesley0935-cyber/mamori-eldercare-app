@@ -325,6 +325,25 @@ export async function incrementElderFamilyCount(): Promise<number> {
   return getElderFamilyCount();
 }
 
+// ── Elder self backend id（長輩端專用）─────────────────────────────────────────
+
+/**
+ * 長輩端專用：取得「自己」的後端 Elder id。
+ *
+ * ⚠️ 家屬端不要呼叫此函式。`backendElderId` 是全域單一鍵，在家屬裝置上只代表
+ * 「最後一次配對的那位長輩」，多長輩情境下會取到錯的人。
+ * 家屬端請改用 `PairedElder.elderId`。
+ *
+ * 此函式是全專案唯一讀取該鍵的地方，方便日後追蹤與收斂。
+ */
+export async function getElderSelfBackendId(): Promise<string | null> {
+  try {
+    return await AsyncStorage.getItem('backendElderId');
+  } catch {
+    return null;
+  }
+}
+
 // ── Family role ───────────────────────────────────────────────────────────────
 
 /**

@@ -6,6 +6,18 @@ import {
   deleteMedication as apiDeleteMedication,
 } from '../api/medicationApi';
 
+/**
+ * 本模組區分兩種識別碼，呼叫端必須明確傳入，不再從全域鍵推測：
+ *
+ * - `localKey`        本機 AsyncStorage 分區用。長輩端 = 自己的 pairCode；
+ *                     家屬端 = `PairedElder.pairCode`。
+ * - `backendElderId`  後端 API 用的 Elder UUID。長輩端 = `getElderSelfBackendId()`；
+ *                     家屬端 = `PairedElder.elderId`。傳 null 代表沒有後端身分，只走本機。
+ *
+ * 這兩者以前混用同一個 `elderId` 參數、且後端呼叫一律讀全域 `backendElderId`，
+ * 導致多長輩情境下藥物會寫到錯的長輩身上。
+ */
+
 export type MedPeriod = 'morning' | 'noon' | 'evening' | 'bedtime';
 
 export interface Medication {
@@ -62,16 +74,16 @@ export function yesterdayDateStr(): string {
 
 // ─── Storage keys (per-elder) ─────────────────────────────────────────────────
 
-function medsKey(elderId: string = 'default'): string {
-  return `medications_list_${elderId}`;
+function medsKey(localKey: string = 'default'): string {
+  return `medications_list_${localKey}`;
 }
 
-function takenKey(elderId: string = 'default', ds: string): string {
-  return `medication_taken_${elderId}_${ds}`;
+function takenKey(localKey: string = 'default', ds: string): string {
+  return `medication_taken_${localKey}_${ds}`;
 }
 
-function reminderKey(elderId: string = 'default', ds: string): string {
-  return `medication_reminder_${elderId}_${ds}`;
+function reminderKey(localKey: string = 'default', ds: string): string {
+  return `medication_reminder_${localKey}_${ds}`;
 }
 
 function hhmm(d: Date): string {
@@ -80,17 +92,11 @@ function hhmm(d: Date): string {
 
 // ─── Medication list ──────────────────────────────────────────────────────────
 
-async function getBackendElderId(): Promise<string | null> {
+export async function getMedications(
+  localKey: string,
+  backendElderId: string | null,
+): Promise<Medication[]> {
   try {
-    return await AsyncStorage.getItem('backendElderId');
-  } catch {
-    return null;
-  }
-}
-
-export async function getMedications(elderId: string = 'default'): Promise<Medication[]> {
-  try {
-    const backendElderId = await getBackendElderId();
     if (backendElderId) {
       const records = await apiGetMedications(backendElderId);
       if (records.length > 0) {
@@ -108,20 +114,23 @@ export async function getMedications(elderId: string = 'default'): Promise<Medic
   }
   // fallback：後端失敗時讀本地
   try {
-    const raw = await AsyncStorage.getItem(medsKey(elderId));
+    const raw = await AsyncStorage.getItem(medsKey(localKey));
     if (raw) return JSON.parse(raw) as Medication[];
   } catch {}
   // 無任何資料時回傳空陣列，不再提供假的預設藥物
   return [];
 }
 
-export async function saveMedications(meds: Medication[], elderId: string = 'default'): Promise<void> {
-  await AsyncStorage.setItem(medsKey(elderId), JSON.stringify(meds));
+export async function saveMedications(meds: Medication[], localKey: string = 'default'): Promise<void> {
+  await AsyncStorage.setItem(medsKey(localKey), JSON.stringify(meds));
 }
 
-export async function addMedication(med: Omit<Medication, 'id'>, elderId: string = 'default'): Promise<Medication[]> {
+export async function addMedication(
+  med: Omit<Medication, 'id'>,
+  localKey: string,
+  backendElderId: string | null,
+): Promise<Medication[]> {
   try {
-    const backendElderId = await getBackendElderId();
     if (backendElderId) {
       await apiAddMedication(backendElderId, {
         name: med.name,
@@ -130,22 +139,25 @@ export async function addMedication(med: Omit<Medication, 'id'>, elderId: string
         period: med.period,
         note: med.note,
       });
-      return getMedications(elderId);
+      return getMedications(localKey, backendElderId);
     }
   } catch (e) {
     console.warn('[MedicationStorageService] addMedication fallback to local:', e);
   }
   // fallback
-  const meds = await getMedications(elderId);
+  const meds = await getMedications(localKey, null);
   const newMed: Medication = {...med, id: `med_${Date.now()}`};
   const updated = [...meds, newMed];
-  await saveMedications(updated, elderId);
+  await saveMedications(updated, localKey);
   return updated;
 }
 
-export async function updateMedication(updated: Medication, elderId: string = 'default'): Promise<Medication[]> {
+export async function updateMedication(
+  updated: Medication,
+  localKey: string,
+  backendElderId: string | null,
+): Promise<Medication[]> {
   try {
-    const backendElderId = await getBackendElderId();
     if (backendElderId) {
       await apiUpdateMedication(backendElderId, updated.id, {
         name: updated.name,
@@ -154,80 +166,84 @@ export async function updateMedication(updated: Medication, elderId: string = 'd
         period: updated.period,
         note: updated.note,
       });
-      return getMedications(elderId);
+      return getMedications(localKey, backendElderId);
     }
   } catch (e) {
     console.warn('[MedicationStorageService] updateMedication fallback to local:', e);
   }
   // fallback
-  const meds = await getMedications(elderId);
+  const meds = await getMedications(localKey, null);
   const newList = meds.map(m => (m.id === updated.id ? updated : m));
-  await saveMedications(newList, elderId);
+  await saveMedications(newList, localKey);
   return newList;
 }
 
-export async function deleteMedication(id: string, elderId: string = 'default'): Promise<Medication[]> {
+export async function deleteMedication(
+  id: string,
+  localKey: string,
+  backendElderId: string | null,
+): Promise<Medication[]> {
   try {
-    const backendElderId = await getBackendElderId();
     if (backendElderId) {
       await apiDeleteMedication(backendElderId, id);
-      return getMedications(elderId);
+      return getMedications(localKey, backendElderId);
     }
   } catch (e) {
     console.warn('[MedicationStorageService] deleteMedication fallback to local:', e);
   }
   // fallback
-  const meds = await getMedications(elderId);
+  const meds = await getMedications(localKey, null);
   const newList = meds.filter(m => m.id !== id);
-  await saveMedications(newList, elderId);
+  await saveMedications(newList, localKey);
   return newList;
 }
 
 // ─── Daily taken state ────────────────────────────────────────────────────────
+// 以下皆為純本機狀態，只需要 localKey，不涉及後端。
 
-export async function getDailyTakenStateForDate(ds: string, elderId: string = 'default'): Promise<DailyTakenState> {
+export async function getDailyTakenStateForDate(ds: string, localKey: string = 'default'): Promise<DailyTakenState> {
   try {
-    const raw = await AsyncStorage.getItem(takenKey(elderId, ds));
+    const raw = await AsyncStorage.getItem(takenKey(localKey, ds));
     if (raw) return JSON.parse(raw);
   } catch {}
   return {};
 }
 
-export async function getDailyTakenState(elderId: string = 'default'): Promise<DailyTakenState> {
-  return getDailyTakenStateForDate(todayDateStr(), elderId);
+export async function getDailyTakenState(localKey: string = 'default'): Promise<DailyTakenState> {
+  return getDailyTakenStateForDate(todayDateStr(), localKey);
 }
 
-async function saveTakenStateForDate(ds: string, state: DailyTakenState, elderId: string = 'default'): Promise<void> {
-  await AsyncStorage.setItem(takenKey(elderId, ds), JSON.stringify(state));
+async function saveTakenStateForDate(ds: string, state: DailyTakenState, localKey: string = 'default'): Promise<void> {
+  await AsyncStorage.setItem(takenKey(localKey, ds), JSON.stringify(state));
 }
 
-export async function markTakenOnDate(medId: string, ds: string, elderId: string = 'default'): Promise<DailyTakenState> {
-  const state = await getDailyTakenStateForDate(ds, elderId);
+export async function markTakenOnDate(medId: string, ds: string, localKey: string = 'default'): Promise<DailyTakenState> {
+  const state = await getDailyTakenStateForDate(ds, localKey);
   state[medId] = hhmm(new Date());
-  await saveTakenStateForDate(ds, state, elderId);
+  await saveTakenStateForDate(ds, state, localKey);
   return state;
 }
 
-export async function unmarkTakenOnDate(medId: string, ds: string, elderId: string = 'default'): Promise<DailyTakenState> {
-  const state = await getDailyTakenStateForDate(ds, elderId);
+export async function unmarkTakenOnDate(medId: string, ds: string, localKey: string = 'default'): Promise<DailyTakenState> {
+  const state = await getDailyTakenStateForDate(ds, localKey);
   state[medId] = null;
-  await saveTakenStateForDate(ds, state, elderId);
+  await saveTakenStateForDate(ds, state, localKey);
   return state;
 }
 
-export async function markTaken(medId: string, elderId: string = 'default'): Promise<DailyTakenState> {
-  return markTakenOnDate(medId, todayDateStr(), elderId);
+export async function markTaken(medId: string, localKey: string = 'default'): Promise<DailyTakenState> {
+  return markTakenOnDate(medId, todayDateStr(), localKey);
 }
 
-export async function unmarkTaken(medId: string, elderId: string = 'default'): Promise<DailyTakenState> {
-  return unmarkTakenOnDate(medId, todayDateStr(), elderId);
+export async function unmarkTaken(medId: string, localKey: string = 'default'): Promise<DailyTakenState> {
+  return unmarkTakenOnDate(medId, todayDateStr(), localKey);
 }
 
-export async function getEffectiveTakenState(meds: Medication[], elderId: string = 'default'): Promise<DailyTakenState> {
-  const todayState = await getDailyTakenState(elderId);
+export async function getEffectiveTakenState(meds: Medication[], localKey: string = 'default'): Promise<DailyTakenState> {
+  const todayState = await getDailyTakenState(localKey);
   if (new Date().getHours() >= 1) return todayState;
 
-  const ydState = await getDailyTakenStateForDate(yesterdayDateStr(), elderId);
+  const ydState = await getDailyTakenStateForDate(yesterdayDateStr(), localKey);
   const merged: DailyTakenState = {...todayState};
   for (const med of meds) {
     if (isBedtimeMed(med)) {
@@ -239,38 +255,38 @@ export async function getEffectiveTakenState(meds: Medication[], elderId: string
 
 // ─── Daily reminder state ─────────────────────────────────────────────────────
 
-export async function getDailyReminderStateForDate(ds: string, elderId: string = 'default'): Promise<DailyReminderState> {
+export async function getDailyReminderStateForDate(ds: string, localKey: string = 'default'): Promise<DailyReminderState> {
   try {
-    const raw = await AsyncStorage.getItem(reminderKey(elderId, ds));
+    const raw = await AsyncStorage.getItem(reminderKey(localKey, ds));
     if (raw) return JSON.parse(raw);
   } catch {}
   return {};
 }
 
-export async function getDailyReminderState(elderId: string = 'default'): Promise<DailyReminderState> {
-  return getDailyReminderStateForDate(todayDateStr(), elderId);
+export async function getDailyReminderState(localKey: string = 'default'): Promise<DailyReminderState> {
+  return getDailyReminderStateForDate(todayDateStr(), localKey);
 }
 
-async function saveReminderStateForDate(ds: string, state: DailyReminderState, elderId: string = 'default'): Promise<void> {
-  await AsyncStorage.setItem(reminderKey(elderId, ds), JSON.stringify(state));
+async function saveReminderStateForDate(ds: string, state: DailyReminderState, localKey: string = 'default'): Promise<void> {
+  await AsyncStorage.setItem(reminderKey(localKey, ds), JSON.stringify(state));
 }
 
-export async function markReminderSent(medId: string, elderId: string = 'default'): Promise<void> {
-  const state = await getDailyReminderState(elderId);
+export async function markReminderSent(medId: string, localKey: string = 'default'): Promise<void> {
+  const state = await getDailyReminderState(localKey);
   state[medId] = {sentAt: hhmm(new Date()), missedSentAt: state[medId]?.missedSentAt ?? null};
-  await saveReminderStateForDate(todayDateStr(), state, elderId);
+  await saveReminderStateForDate(todayDateStr(), state, localKey);
 }
 
-export async function markMissedSent(medId: string, elderId: string = 'default'): Promise<void> {
-  const state = await getDailyReminderState(elderId);
+export async function markMissedSent(medId: string, localKey: string = 'default'): Promise<void> {
+  const state = await getDailyReminderState(localKey);
   state[medId] = {sentAt: state[medId]?.sentAt ?? null, missedSentAt: hhmm(new Date())};
-  await saveReminderStateForDate(todayDateStr(), state, elderId);
+  await saveReminderStateForDate(todayDateStr(), state, localKey);
 }
 
-export async function markMissedSentOnDate(medId: string, ds: string, elderId: string = 'default'): Promise<void> {
-  const state = await getDailyReminderStateForDate(ds, elderId);
+export async function markMissedSentOnDate(medId: string, ds: string, localKey: string = 'default'): Promise<void> {
+  const state = await getDailyReminderStateForDate(ds, localKey);
   state[medId] = {sentAt: state[medId]?.sentAt ?? null, missedSentAt: hhmm(new Date())};
-  await saveReminderStateForDate(ds, state, elderId);
+  await saveReminderStateForDate(ds, state, localKey);
 }
 
 // ─── Sleep-window bundle tracking ─────────────────────────────────────────────
@@ -298,13 +314,13 @@ export interface FamilyCancelRecord {
 
 const CANCEL_LOG_PREFIX = 'medication_cancel_log_';
 
-function cancelLogKey(elderId: string = 'default'): string {
-  return `${CANCEL_LOG_PREFIX}${elderId}_${todayDateStr()}`;
+function cancelLogKey(localKey: string = 'default'): string {
+  return `${CANCEL_LOG_PREFIX}${localKey}_${todayDateStr()}`;
 }
 
-export async function getFamilyCancelRecords(elderId: string = 'default'): Promise<FamilyCancelRecord[]> {
+export async function getFamilyCancelRecords(localKey: string = 'default'): Promise<FamilyCancelRecord[]> {
   try {
-    const raw = await AsyncStorage.getItem(cancelLogKey(elderId));
+    const raw = await AsyncStorage.getItem(cancelLogKey(localKey));
     if (raw) return JSON.parse(raw) as FamilyCancelRecord[];
   } catch {}
   return [];
@@ -312,8 +328,8 @@ export async function getFamilyCancelRecords(elderId: string = 'default'): Promi
 
 export async function addFamilyCancelRecord(
   record: FamilyCancelRecord,
-  elderId: string = 'default',
+  localKey: string = 'default',
 ): Promise<void> {
-  const list = await getFamilyCancelRecords(elderId);
-  await AsyncStorage.setItem(cancelLogKey(elderId), JSON.stringify([...list, record]));
+  const list = await getFamilyCancelRecords(localKey);
+  await AsyncStorage.setItem(cancelLogKey(localKey), JSON.stringify([...list, record]));
 }

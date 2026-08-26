@@ -77,6 +77,7 @@ import {
 import {useFocusEffect} from '@react-navigation/native';
 import {
   getElderProfile,
+  getElderSelfBackendId,
   getElderFamilyCount,
   getFamilyMembers,
   type ElderProfile,
@@ -1037,33 +1038,30 @@ export default function ElderHomeScreen() {
     return startMedicationReminder();
   }, []);
 
+  // 長輩端自己的兩組識別碼：localKey 分本機儲存、backendElderId 打後端
+  const loadOwnMedications = useCallback(async () => {
+    const [profile, backendElderId] = await Promise.all([
+      getElderProfile(),
+      getElderSelfBackendId(),
+    ]);
+    const localKey = profile?.pairCode ?? 'default';
+    const loadedMeds = await getMedications(localKey, backendElderId);
+    setMeds(loadedMeds);
+    setTakenState(await getEffectiveTakenState(loadedMeds, localKey));
+  }, []);
+
   // 每次畫面 focus 時重新從後端拉取最新服藥資料
   useFocusEffect(
     useCallback(() => {
-      getElderProfile().then(p => {
-        const elderId = p?.pairCode ?? 'default';
-        getMedications(elderId).then(loadedMeds => {
-          setMeds(loadedMeds);
-          return getEffectiveTakenState(loadedMeds, elderId);
-        }).then(setTakenState);
-      });
-    }, []),
+      loadOwnMedications();
+    }, [loadOwnMedications]),
   );
 
   // 每 30 秒自動刷新藥物資料（讓家屬新增後長輩端不需重開 APP）
   useEffect(() => {
-    const refreshMeds = () => {
-      getElderProfile().then(p => {
-        const elderId = p?.pairCode ?? 'default';
-        getMedications(elderId).then(loadedMeds => {
-          setMeds(loadedMeds);
-          return getEffectiveTakenState(loadedMeds, elderId);
-        }).then(setTakenState);
-      });
-    };
-    const id = setInterval(refreshMeds, 30_000);
+    const id = setInterval(() => { loadOwnMedications(); }, 30_000);
     return () => clearInterval(id);
-  }, []);
+  }, [loadOwnMedications]);
 
   // 每次進入畫面立即重新讀取步數（Health Connect 可用時），不依賴 60 秒輪詢
   useFocusEffect(

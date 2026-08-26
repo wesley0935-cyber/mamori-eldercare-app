@@ -25,7 +25,7 @@ import {
   sendMissedMedicine,
   sendSleepWindowMissedBundle,
 } from './NotificationService';
-import {getElderDisplayName, getElderProfile} from './ProfileService';
+import {getElderDisplayName, getElderProfile, getElderSelfBackendId} from './ProfileService';
 import {getThresholdSettings} from './ThresholdSettingsService';
 
 const CHECK_INTERVAL_MS = 60_000;
@@ -54,11 +54,19 @@ async function cancelStaleMedicationNotifications(): Promise<void> {
   }
 }
 
-// ─── 取得長輩端自己的 elderId ─────────────────────────────────────────────────
+// ─── 取得長輩端自己的識別碼 ───────────────────────────────────────────────────
 
-async function getElderSelfId(): Promise<string> {
-  const profile = await getElderProfile();
-  return profile?.pairCode ?? 'default';
+/**
+ * 長輩端自己的兩組識別碼：
+ * - localKey        本機分區（自己的 pairCode）
+ * - backendElderId  後端 Elder UUID（自己的）
+ */
+async function getElderSelfKeys(): Promise<{localKey: string; backendElderId: string | null}> {
+  const [profile, backendElderId] = await Promise.all([
+    getElderProfile(),
+    getElderSelfBackendId(),
+  ]);
+  return {localKey: profile?.pairCode ?? 'default', backendElderId};
 }
 
 // ─── Trigger notification scheduling ─────────────────────────────────────────
@@ -92,10 +100,10 @@ async function scheduleOne(med: Medication): Promise<void> {
 export async function scheduleTodayMedicationReminders(): Promise<void> {
   try {
     await cancelStaleMedicationNotifications();
-    const elderId = await getElderSelfId();
+    const {localKey, backendElderId} = await getElderSelfKeys();
     const [meds, taken] = await Promise.all([
-      getMedications(elderId),
-      getDailyTakenState(elderId),
+      getMedications(localKey, backendElderId),
+      getDailyTakenState(localKey),
     ]);
     for (const med of meds) {
       if (taken[med.id]) continue;
@@ -117,18 +125,18 @@ export async function cancelMedicationNotification(medId: string): Promise<void>
 }
 
 export async function confirmMedicationTaken(medId: string): Promise<DailyTakenState> {
-  const elderId = await getElderSelfId();
-  const meds = await getMedications(elderId);
+  const {localKey, backendElderId} = await getElderSelfKeys();
+  const meds = await getMedications(localKey, backendElderId);
   const med  = meds.find(m => m.id === medId);
   const h    = new Date().getHours();
   const dateKey = (med && isBedtimeMed(med) && h < 1) ? yesterdayDateStr() : todayDateStr();
 
   await Promise.all([
-    markTakenOnDate(medId, dateKey, elderId),
+    markTakenOnDate(medId, dateKey, localKey),
     cancelMedicationNotification(medId),
   ]);
 
-  return getEffectiveTakenState(meds, elderId);
+  return getEffectiveTakenState(meds, localKey);
 }
 
 // ─── Family cancel ────────────────────────────────────────────────────────────
@@ -162,12 +170,15 @@ async function rescheduleAfterCancel(med: Medication): Promise<void> {
 }
 
 /**
- * 家屬端取消服藥記錄，需傳入 elderId（長輩的 pairCode）
+ * 家屬端取消服藥記錄。
+ * @param localKey        長輩的 pairCode（本機分區用）
+ * @param backendElderId  該長輩的後端 Elder UUID（`PairedElder.elderId`），無則傳 null
  */
 export async function familyCancelMedicationTaken(
   med: Medication,
   elderName: string,
-  elderId: string = 'default',
+  localKey: string,
+  backendElderId: string | null,
 ): Promise<DailyTakenState> {
   const now     = new Date();
   const hh      = String(now.getHours()).padStart(2, '0');
@@ -176,7 +187,7 @@ export async function familyCancelMedicationTaken(
   const nowMin  = nowHour * 60 + now.getMinutes();
 
   const dateKey = (isBedtimeMed(med) && nowHour < 1) ? yesterdayDateStr() : todayDateStr();
-  await unmarkTakenOnDate(med.id, dateKey, elderId);
+  await unmarkTakenOnDate(med.id, dateKey, localKey);
 
   const [mh, mmin] = med.time.split(':').map(Number);
   const medMin     = mh * 60 + mmin;
@@ -190,16 +201,16 @@ export async function familyCancelMedicationTaken(
     await addFamilyCancelRecord({
       text: `⚠️ 家屬取消了 ${elderName} ${med.time} ${med.name} 的服藥記錄`,
       at:   `${hh}:${mm}`,
-    }, elderId);
+    }, localKey);
   } else {
     await addFamilyCancelRecord({
       text: `⚠️ 家屬取消了 ${elderName} ${med.time} ${med.name} 的服藥記錄（已超過服藥時間）`,
       at:   `${hh}:${mm}`,
-    }, elderId);
+    }, localKey);
   }
 
-  const meds = await getMedications(elderId);
-  return getEffectiveTakenState(meds, elderId);
+  const meds = await getMedications(localKey, backendElderId);
+  return getEffectiveTakenState(meds, localKey);
 }
 
 // ─── 07:00 sleep-window bundle ────────────────────────────────────────────────
@@ -211,13 +222,13 @@ async function checkSleepWindowBundle(): Promise<void> {
   if (await hasSleepBundleBeenSent(today)) return;
   await markSleepBundleSent(today);
 
-  const elderId = await getElderSelfId();
-  const meds    = await getMedications(elderId);
+  const {localKey, backendElderId} = await getElderSelfKeys();
+  const meds    = await getMedications(localKey, backendElderId);
   const [ydTaken, ydReminders, todayTaken, todayReminders] = await Promise.all([
-    getDailyTakenStateForDate(yd, elderId),
-    getDailyReminderStateForDate(yd, elderId),
-    getDailyTakenState(elderId),
-    getDailyReminderState(elderId),
+    getDailyTakenStateForDate(yd, localKey),
+    getDailyReminderStateForDate(yd, localKey),
+    getDailyTakenState(localKey),
+    getDailyReminderState(localKey),
   ]);
 
   const missed: {time: string; name: string}[] = [];
@@ -227,7 +238,7 @@ async function checkSleepWindowBundle(): Promise<void> {
       if (ydTaken[med.id]) continue;
       const state = ydReminders[med.id] ?? {sentAt: null, missedSentAt: null};
       if (!state.missedSentAt) {
-        await markMissedSentOnDate(med.id, yd, elderId);
+        await markMissedSentOnDate(med.id, yd, localKey);
         missed.push({time: med.time, name: med.name});
       }
     } else {
@@ -236,7 +247,7 @@ async function checkSleepWindowBundle(): Promise<void> {
       if (todayTaken[med.id]) continue;
       const state = todayReminders[med.id] ?? {sentAt: null, missedSentAt: null};
       if (!state.missedSentAt) {
-        await markMissedSent(med.id, elderId);
+        await markMissedSent(med.id, localKey);
         missed.push({time: med.time, name: med.name});
       }
     }
@@ -269,16 +280,16 @@ async function checkMissed(): Promise<void> {
 
     if (inSleepWindow) return;
 
-    const elderId = await getElderSelfId();
+    const {localKey, backendElderId} = await getElderSelfKeys();
     const [meds, {missedMedicineHours}] = await Promise.all([
-      getMedications(elderId),
+      getMedications(localKey, backendElderId),
       getThresholdSettings(),
     ]);
 
     const missedThresholdMin = missedMedicineHours * 60;
     const [todayTaken, todayReminders] = await Promise.all([
-      getDailyTakenState(elderId),
-      getDailyReminderState(elderId),
+      getDailyTakenState(localKey),
+      getDailyReminderState(localKey),
     ]);
 
     let elderName: string | null = null;
@@ -296,7 +307,7 @@ async function checkMissed(): Promise<void> {
       const state = todayReminders[med.id] ?? {sentAt: null, missedSentAt: null};
 
       if (nowMinOfDay >= medMinOfDay + missedThresholdMin && !state.missedSentAt) {
-        await markMissedSent(med.id, elderId);
+        await markMissedSent(med.id, localKey);
         sendMissedMedicine(await getName(), med.time, med.name);
       }
     }

@@ -257,14 +257,19 @@ export default function MedicineManagementScreen() {
     loadElders();
   }, []);
 
+  // 當前選中長輩的後端 Elder UUID。以往此處讀全域 backendElderId，
+  // 導致多長輩時永遠指向「最後配對的那位」，藥物會張冠李戴。
+  const selectedBackendElderId =
+    elders.find(e => e.pairCode === selectedElderId)?.elderId ?? null;
+
   // 每次切換長輩時重新載入藥物
   const load = useCallback(async () => {
     if (!selectedElderId) return;
-    const loadedMeds = await getMedications(selectedElderId);
+    const loadedMeds = await getMedications(selectedElderId, selectedBackendElderId);
     const loadedTaken = await getEffectiveTakenState(loadedMeds, selectedElderId);
     setMeds(loadedMeds);
     setTakenState(loadedTaken);
-  }, [selectedElderId]);
+  }, [selectedElderId, selectedBackendElderId]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -279,7 +284,9 @@ export default function MedicineManagementScreen() {
           text: '確認取消',
           style: 'destructive',
           onPress: async () => {
-            const updated = await familyCancelMedicationTaken(med, elderName, selectedElderId);
+            const updated = await familyCancelMedicationTaken(
+              med, elderName, selectedElderId, selectedBackendElderId,
+            );
             setTakenState({...updated});
           },
         },
@@ -293,15 +300,17 @@ export default function MedicineManagementScreen() {
 
   const handleSave = async (draft: Omit<Medication, 'id'>) => {
     if (editTarget) {
-      setMeds(await updateMedication({...draft, id: editTarget.id}, selectedElderId));
+      setMeds(await updateMedication(
+        {...draft, id: editTarget.id}, selectedElderId, selectedBackendElderId,
+      ));
     } else {
-      setMeds(await addMedication(draft, selectedElderId));
+      setMeds(await addMedication(draft, selectedElderId, selectedBackendElderId));
     }
     setModalVisible(false);
   };
 
   const handleDelete = async (id: string) => {
-    setMeds(await deleteMedication(id, selectedElderId));
+    setMeds(await deleteMedication(id, selectedElderId, selectedBackendElderId));
   };
 
   const selectedElder = elders.find(e => e.pairCode === selectedElderId);
