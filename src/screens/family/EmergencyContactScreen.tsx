@@ -21,7 +21,12 @@ import {
   type EmergencyContact,
   type ContactRelationship,
 } from '../../services/EmergencyContactService';
-import {getFamilyRole, type FamilyRole} from '../../services/ProfileService';
+import {
+  getFamilyRole,
+  getPairedElders,
+  type FamilyRole,
+  type PairedElder,
+} from '../../services/ProfileService';
 
 const COLORS = {
   background: '#F0F3FA',
@@ -272,12 +277,32 @@ export default function EmergencyContactScreen() {
   const [editing, setEditing] = useState<EmergencyContact | null>(null);
   // null = 角色尚未載入。權限判斷一律以 'admin' 為門檻，避免載入期間 fail-open
   const [familyRole, setFamilyRole] = useState<FamilyRole | null>(null);
+  const [elders, setElders] = useState<PairedElder[]>([]);
+  const [selectedElderId, setSelectedElderId] = useState<string>('');
+
+  // 載入已配對長輩清單
+  useEffect(() => {
+    async function loadElders() {
+      const [list, role] = await Promise.all([getPairedElders(), getFamilyRole()]);
+      setElders(list);
+      setFamilyRole(role);
+      if (list.length > 0) {
+        setSelectedElderId(list[0].pairCode);
+      }
+    }
+    loadElders();
+  }, []);
+
+  // 當前選中長輩的後端 Elder UUID。以往此處讀全域 backendElderId，
+  // 導致多長輩時緊急聯絡人永遠存到「最後配對的那位」身上。
+  const selectedBackendElderId =
+    elders.find(e => e.pairCode === selectedElderId)?.elderId ?? null;
+  const selectedElder = elders.find(e => e.pairCode === selectedElderId);
 
   const load = useCallback(async () => {
-    const [list, role] = await Promise.all([getEmergencyContacts(), getFamilyRole()]);
-    setContacts(list);
-    setFamilyRole(role);
-  }, []);
+    if (!selectedElderId) { return; }
+    setContacts(await getEmergencyContacts(selectedBackendElderId));
+  }, [selectedElderId, selectedBackendElderId]);
 
   useEffect(() => {
     load();
@@ -323,7 +348,7 @@ export default function EmergencyContactScreen() {
       updated[0] = {...updated[0], isPrimary: true};
     }
 
-    await saveEmergencyContacts(updated);
+    await saveEmergencyContacts(updated, selectedBackendElderId);
     setContacts(updated);
     setModalVisible(false);
     setEditing(null);
@@ -344,7 +369,7 @@ export default function EmergencyContactScreen() {
             if (contact.isPrimary && updated.length > 0) {
               updated[0] = {...updated[0], isPrimary: true};
             }
-            await saveEmergencyContacts(updated);
+            await saveEmergencyContacts(updated, selectedBackendElderId);
             setContacts(updated);
           },
         },
@@ -402,6 +427,24 @@ export default function EmergencyContactScreen() {
         {familyRole !== 'admin' && <View style={styles.addBtn} />}
       </View>
 
+      {/* 長輩選擇 Tab —— 查看者也可切換，切換屬於「查看」不涉及修改 */}
+      {elders.length > 1 && (
+        <View style={styles.elderTabBar}>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.elderTabContent}>
+            {elders.map(elder => (
+              <TouchableOpacity
+                key={elder.pairCode}
+                style={[styles.elderTab, selectedElderId === elder.pairCode && styles.elderTabActive]}
+                onPress={() => setSelectedElderId(elder.pairCode)}>
+                <Text style={[styles.elderTabText, selectedElderId === elder.pairCode && styles.elderTabTextActive]}>
+                  {elder.name}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
+
       <ScrollView
         style={styles.scroll}
         contentContainerStyle={styles.scrollContent}
@@ -410,6 +453,13 @@ export default function EmergencyContactScreen() {
         {familyRole === 'viewer' && (
           <View style={styles.viewerBanner}>
             <Text style={styles.viewerBannerText}>👁 您是查看者，無法修改緊急聯絡人</Text>
+          </View>
+        )}
+
+        {/* 目前選擇的長輩 */}
+        {selectedElder && (
+          <View style={styles.elderBanner}>
+            <Text style={styles.elderBannerText}>👤 {selectedElder.name} 的緊急聯絡人</Text>
           </View>
         )}
 
@@ -484,6 +534,25 @@ const styles = StyleSheet.create({
   addBtnText: {color: COLORS.white, fontSize: 14, fontWeight: '700'},
   addBtnTextDisabled: {color: 'rgba(255,255,255,0.35)'},
   // Scroll
+  // 長輩選擇 Tab（樣式沿用 MedicineManagementScreen，保持兩頁操作一致）
+  elderTabBar: {backgroundColor: COLORS.deepBlueEnd, paddingVertical: 8},
+  elderTabContent: {paddingHorizontal: 12, gap: 8},
+  elderTab: {
+    paddingHorizontal: 16, paddingVertical: 8,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
+  },
+  elderTabActive: {backgroundColor: '#FFFFFF'},
+  elderTabText: {color: 'rgba(255,255,255,0.8)', fontSize: 14, fontWeight: '600'},
+  elderTabTextActive: {color: COLORS.deepBlueStart},
+  elderBanner: {
+    backgroundColor: '#EFF6FF', borderRadius: 12,
+    padding: 12, marginBottom: 12,
+    borderWidth: 1, borderColor: '#BFDBFE',
+  },
+  elderBannerText: {fontSize: 14, color: '#1B4F72', fontWeight: '700'},
+
   scroll: {flex: 1},
   scrollContent: {padding: 16},
   // Info card

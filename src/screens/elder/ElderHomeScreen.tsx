@@ -1012,21 +1012,25 @@ export default function ElderHomeScreen() {
   useEffect(() => { return startActivityDetection(); }, []);
   useEffect(() => { return startBatteryMonitor(); }, []);
 
+  // 長輩端讀自己的緊急聯絡人：backendElderId 由 getElderSelfBackendId() 提供
+  const loadOwnEmergencyContacts = useCallback(async () => {
+    const backendElderId = await getElderSelfBackendId();
+    setEmergencyContacts(await getEmergencyContacts(backendElderId));
+  }, []);
+
   useEffect(() => {
     getElderProfile().then(p => { if (p) setProfile(p); });
     getElderFamilyCount().then(setFamilyCount);
     getFamilyMembers().then(setFamilyMembers);
     getThresholdSettings().then(t => setStepGoal(t.stepGoal));
-    getEmergencyContacts().then(setEmergencyContacts);
-  }, []);
+    loadOwnEmergencyContacts();
+  }, [loadOwnEmergencyContacts]);
 
   // 每 30 秒自動刷新緊急聯絡人（讓家屬新增/刪除後長輩端不需重開 APP）
   useEffect(() => {
-    const id = setInterval(() => {
-      getEmergencyContacts().then(setEmergencyContacts);
-    }, 30_000);
+    const id = setInterval(() => { loadOwnEmergencyContacts(); }, 30_000);
     return () => clearInterval(id);
-  }, []);
+  }, [loadOwnEmergencyContacts]);
 
   useEffect(() => {
     getDailyInteractionState().then(setSharedAt);
