@@ -240,18 +240,27 @@ function AddElderModal({visible, onClose, onAdded}: AddElderModalProps) {
 // ─── Invite code modal ─────────────────────────────────────────────────────────
 const INVITE_EXPIRY_HOURS = 48; // 與後端 /api/pairing/invite/generate 一致
 
-function InviteModal({visible, onClose}: {visible: boolean; onClose: () => void}) {
+function InviteModal({visible, onClose, elders}: {
+  visible: boolean; onClose: () => void; elders: PairedElder[];
+}) {
+  const [selectedElderId, setSelectedElderId] = useState('');
   const [invite, setInvite] = useState<InviteCode | null>(null);
   const [failed, setFailed] = useState(false);
 
-  const loadOrGenerate = async () => {
+  const selectedElder = elders.find(e => e.pairCode === selectedElderId);
+  const selectedBackendElderId = selectedElder?.elderId ?? null;
+  // 沒有長輩可選（尚未配對）與「產生失敗」是不同原因，訊息需分開，
+  // 否則使用者會誤以為是網路問題而反覆重試
+  const noElder = elders.length === 0;
+
+  const loadOrGenerate = async (elderId: string) => {
     setFailed(false);
-    const existing = await getInviteCode();
+    const existing = await getInviteCode(elderId);
     if (existing) {
       const ageHours = (Date.now() - new Date(existing.createdAt).getTime()) / 3_600_000;
       if (ageHours <= INVITE_EXPIRY_HOURS) { setInvite(existing); return; }
     }
-    const fresh = await generateAndSaveInviteCode();
+    const fresh = await generateAndSaveInviteCode(elderId);
     if (!fresh) { setFailed(true); return; }
     setInvite(fresh);
   };
@@ -260,9 +269,18 @@ function InviteModal({visible, onClose}: {visible: boolean; onClose: () => void}
     if (!visible) return;
     setInvite(null);
     setFailed(false);
-    loadOrGenerate();
+    if (elders.length > 0) { setSelectedElderId(elders[0].pairCode); }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
+
+  // 選中的長輩確定後才載入／產生該長輩的邀請碼
+  useEffect(() => {
+    if (!visible || !selectedBackendElderId) return;
+    setInvite(null);
+    setFailed(false);
+    loadOrGenerate(selectedBackendElderId);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, selectedBackendElderId]);
 
   const hoursLeft = invite
     ? Math.max(0, INVITE_EXPIRY_HOURS - (Date.now() - new Date(invite.createdAt).getTime()) / 3_600_000)
@@ -279,9 +297,10 @@ function InviteModal({visible, onClose}: {visible: boolean; onClose: () => void}
   };
 
   const handleRegen = async () => {
+    if (!selectedBackendElderId) return;
     setInvite(null);
     setFailed(false);
-    const fresh = await generateAndSaveInviteCode();
+    const fresh = await generateAndSaveInviteCode(selectedBackendElderId);
     if (!fresh) { setFailed(true); return; }
     setInvite(fresh);
   };
@@ -301,7 +320,29 @@ function InviteModal({visible, onClose}: {visible: boolean; onClose: () => void}
             {'將此碼傳給其他家屬，讓他們加入查看。\n加入後為「查看者」，可查看狀態但無法修改設定。'}
           </Text>
 
-          {invite ? (
+          {/* 長輩選擇 Tab —— 只有一位長輩時不顯示，行為與改造前一致 */}
+          {elders.length > 1 && (
+            <View style={ss.inviteElderTabBar}>
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={ss.inviteElderTabContent}>
+                {elders.map(elder => (
+                  <TouchableOpacity
+                    key={elder.pairCode}
+                    style={[ss.inviteElderTab, selectedElderId === elder.pairCode && ss.inviteElderTabActive]}
+                    onPress={() => setSelectedElderId(elder.pairCode)}>
+                    <Text style={[ss.inviteElderTabText, selectedElderId === elder.pairCode && ss.inviteElderTabTextActive]}>
+                      {elder.name}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </ScrollView>
+            </View>
+          )}
+
+          {noElder ? (
+            <View style={ss.inviteFailBox}>
+              <Text style={ss.inviteFailText}>請先配對一位長輩後再邀請家屬</Text>
+            </View>
+          ) : invite ? (
             <>
               <View style={[ss.codeBadge, {backgroundColor: '#EDE9F6', alignSelf: 'center', marginBottom: 8}]}>
                 <Text style={[ss.codeBadgeText, {color: '#6B21A8'}]}>家屬邀請碼・8 位數</Text>
@@ -328,7 +369,10 @@ function InviteModal({visible, onClose}: {visible: boolean; onClose: () => void}
               disabled={!invite}>
               <Text style={ss.inviteCopyText}>📋 複製邀請碼</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={[ss.inviteBtn, ss.inviteRegenBtn]} onPress={handleRegen}>
+            <TouchableOpacity
+              style={[ss.inviteBtn, ss.inviteRegenBtn, noElder && ss.inviteBtnDisabled]}
+              onPress={handleRegen}
+              disabled={noElder}>
               <Text style={ss.inviteRegenText}>重新產生</Text>
             </TouchableOpacity>
           </View>
@@ -941,6 +985,7 @@ export default function FamilyDashboard() {
       <InviteModal
         visible={showInviteModal}
         onClose={() => setShowInviteModal(false)}
+        elders={elders}
       />
       <RemoveElderModal
         elder={elderToRemove}
@@ -1545,4 +1590,16 @@ const ss = StyleSheet.create({
     borderWidth: 1, borderColor: '#FECACA', marginBottom: 14,
   },
   inviteFailText: {fontSize: sc(13), color: C.sos, textAlign: 'center', lineHeight: 20},
+  // 邀請彈窗內的長輩選擇 Tab（樣式模式沿用藥物頁／緊急聯絡人頁）
+  inviteElderTabBar: {backgroundColor: C.primary, borderRadius: 12, paddingVertical: 8, marginBottom: 14},
+  inviteElderTabContent: {paddingHorizontal: 10, gap: 8},
+  inviteElderTab: {
+    paddingHorizontal: 14, paddingVertical: 7,
+    borderRadius: 18,
+    backgroundColor: 'rgba(255,255,255,0.15)',
+    borderWidth: 1, borderColor: 'rgba(255,255,255,0.25)',
+  },
+  inviteElderTabActive: {backgroundColor: C.white},
+  inviteElderTabText: {color: 'rgba(255,255,255,0.8)', fontSize: sc(13), fontWeight: '600'},
+  inviteElderTabTextActive: {color: C.primary},
 });

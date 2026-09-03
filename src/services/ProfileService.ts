@@ -55,7 +55,7 @@ const KEY_ELDER_PAIR_CODE = 'elder_pair_code';
 const KEY_FAMILY_PROFILE  = 'family_profile';
 const KEY_PAIRED_ELDERS   = 'paired_elders';
 const KEY_FAMILY_MEMBERS  = 'elder_family_members';
-const KEY_INVITE_CODE     = 'family_invite_code';
+const KEY_INVITE_CODE_PREFIX = 'family_invite_code_'; // 分長輩：實際鍵為 `${前綴}${elderId}`
 
 export const INVITE_CODE_EXPIRY_MS = 48 * 60 * 60 * 1000; // 48 hours，與後端 /invite/generate 一致
 
@@ -365,16 +365,19 @@ export async function getFamilyRole(): Promise<FamilyRole> {
 // ── Invite code ───────────────────────────────────────────────────────────────
 
 /**
- * 向後端申請 8 位數家屬邀請碼並存入本機。
+ * 向後端申請指定長輩的 8 位數家屬邀請碼並存入本機（依 elderId 分開儲存）。
+ *
+ * @param elderId 該長輩的後端 Elder UUID（`PairedElder.elderId`）。
+ *                多長輩情境下必須明確指定，不再從全域鍵推測——
+ *                否則邀請碼會永遠綁「最後配對的那位」，而非使用者實際選擇的長輩。
  *
  * 失敗時回傳 null（不產生本機假碼）—— 本機碼在後端不存在，
  * 其他家屬永遠加不進來，卻沒有任何錯誤跡象。呼叫端需處理 null。
  */
-export async function generateAndSaveInviteCode(): Promise<InviteCode | null> {
+export async function generateAndSaveInviteCode(elderId: string): Promise<InviteCode | null> {
   try {
-    const elderId = await AsyncStorage.getItem('backendElderId');
     if (!elderId) {
-      console.error('[generateAndSaveInviteCode] 無 backendElderId，無法產生邀請碼');
+      console.error('[generateAndSaveInviteCode] 缺少 elderId，無法產生邀請碼');
       return null;
     }
     const { generateInviteCode } = require('../api/pairingApi');
@@ -388,7 +391,7 @@ export async function generateAndSaveInviteCode(): Promise<InviteCode | null> {
       ? new Date(new Date(result.expiresAt).getTime() - INVITE_CODE_EXPIRY_MS).toISOString()
       : new Date().toISOString();
     const invite: InviteCode = { code: String(result.code), createdAt };
-    await AsyncStorage.setItem(KEY_INVITE_CODE, JSON.stringify(invite));
+    await AsyncStorage.setItem(KEY_INVITE_CODE_PREFIX + elderId, JSON.stringify(invite));
     return invite;
   } catch (e) {
     console.error('[generateAndSaveInviteCode] 後端產生邀請碼失敗:', e);
@@ -396,9 +399,9 @@ export async function generateAndSaveInviteCode(): Promise<InviteCode | null> {
   }
 }
 
-export async function getInviteCode(): Promise<InviteCode | null> {
+export async function getInviteCode(elderId: string): Promise<InviteCode | null> {
   try {
-    const raw = await AsyncStorage.getItem(KEY_INVITE_CODE);
+    const raw = await AsyncStorage.getItem(KEY_INVITE_CODE_PREFIX + elderId);
     return raw ? (JSON.parse(raw) as InviteCode) : null;
   } catch {
     return null;
