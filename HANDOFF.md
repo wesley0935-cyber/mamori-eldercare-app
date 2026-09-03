@@ -28,10 +28,10 @@ Android 長輩端產生配對碼 → iOS 家屬端輸入配對碼完成配對 �
 
 | Repo | 路徑 | HEAD | 說明 |
 |---|---|---|---|
-| 前端 `ElderCareApp` | `C:\Users\Wesley\ElderCareProject\ElderCareApp` | `9cc98fc` | 已 push，與 origin 同步 |
+| 前端 `ElderCareApp` | `C:\Users\Wesley\ElderCareProject\ElderCareApp` | `a28f699` | 已 push，與 origin 同步 |
 | 後端 `MamoriServer` | `C:\Users\Wesley\ElderCareProject\MamoriServer` | `e31118d` | 已 push，與 origin 同步 |
 
-（除錯結案當下的 HEAD 是前端 `a195e6a` / 後端 `65649d1`；其後的 commit 屬於「家屬邀請碼與 viewer 角色」那條線。）
+（除錯結案當下的 HEAD 是前端 `a195e6a` / 後端 `65649d1`；`9cc98fc` 之前屬於「家屬邀請碼與 viewer 角色」那條線；`5354e29` 起屬於「配對路徑統一與多長輩資料錯亂修復」那條線。）
 
 - 前端 GitHub：https://github.com/wesley0935-cyber/mamori-eldercare-app
 - 後端 GitHub：https://github.com/wesley0935-cyber/mamori-server（部署於 Railway）
@@ -166,27 +166,52 @@ Can't reach database server at `maglev.proxy.rlwy.net:34689`
 
 ---
 
+## 配對路徑統一與多長輩資料錯亂修復（已完成，2026-08-26 實機驗證通過）
+
+> 承接上一節「家屬邀請碼與 viewer 角色」盤點時發現的兩個延伸問題：
+> （1）`AddElderModal` 走的配對方向長輩端根本無法配合（長輩端沒有掃描器也沒有輸入配對碼頁面）；
+> （2）`backendElderId` 是全域單一鍵，多長輩情境下藥物／緊急聯絡人會被寫到錯的長輩身上。
+> 三個 commit 依序處理，2026-08-26 於三星（長輩）＋紅米（家屬）實機驗證全數通過。
+
+### 三個 commit 各做了什麼
+
+| Commit | 內容 |
+|---|---|
+| `5354e29` | **統一配對方向為「長輩產碼、家屬掃描／輸入」**：重寫 `AddElderModal` 為 input／scan／confirm 三狀態，移除「家屬輸入姓名年齡 → 產生配對碼」這條長輩端無法配合的死路；掃描邏輯抽成共用元件 `src/components/FamilyQRScanner.tsx`（原本內嵌在 `OnboardingScreen.tsx`，供 onboarding 與新增長輩共用）；刪除死碼 `tryPairWithCode()` 及連帶的 `PAIR_CODE_EXPIRY_MS` |
+| `ca08933`（階段一） | 藥物資料脫離全域鍵：`MedicationStorageService` 四支函式（`getMedications` / `addMedication` / `updateMedication` / `deleteMedication`）簽章改為 `(localKey, backendElderId)` 兩參數，不再從全域 `backendElderId` 推測；`MedicineManagementScreen` 改用 `elders.find(e => e.pairCode === selectedElderId)?.elderId` 查表傳入；長輩端新增 `getElderSelfBackendId()` 集中讀取全域鍵（僅長輩端合法使用） |
+| `a28f699`（階段二） | 緊急聯絡人資料脫離全域鍵：`EmergencyContactService` 三支函式（`getEmergencyContacts` / `saveEmergencyContacts` / `getPrimaryContact`）改為接受 `backendElderId: string \| null`；本機快取鍵從單一 `emergency_contacts` 改為 `emergency_contacts_${backendElderId}`；新增一次性遷移邏輯（搬移舊快取到新鍵、新鍵已有資料則不覆蓋、搬完即刪舊鍵）；`EmergencyContactScreen` 新增長輩選擇 tab bar（樣式沿用藥物頁）與「👤 XXX 的緊急聯絡人」橫幅 |
+
+### 實機驗證結果（2026-08-26）
+
+裝置配置：三星 Galaxy A70（長輩）、紅米 Note 5 Plus（家屬，主空間覆蓋安裝）。
+
+| # | 驗證項目 | 結果 |
+|---|---|---|
+| 1 | 藥物不再張冠李戴 | ✅ 切換長輩 tab 後讀寫的藥物正確對應到該長輩，不再寫入「最後配對的那位」 |
+| 2 | 藥物 30 秒自動同步 | ✅ 家屬端新增藥物後，長輩端 30 秒內出現，不需重開 App |
+| 3 | 服藥提醒觸發 | ✅ 長輩端提醒排程（`MedicationReminderService`）改用 `getElderSelfKeys()` 後仍正常觸發 |
+| 4 | SOS 推播 | ✅ 正常送達，未受配對流程重寫影響 |
+| 5 | 緊急聯絡人分長輩 | ✅ 切換長輩 tab 後聯絡人正確對應，不再互相覆蓋 |
+| 6 | 遷移邏輯保住舊資料 | ✅ 升級前主空間已設定的聯絡人，升級後仍在（單一鍵 → 分長輩鍵搬移成功），未變成空白 |
+| 7 | 先配對的長輩收得到通知 | ✅ 修復前「先配對的長輩」的資料會被「後配對的長輩」的全域值覆蓋而收不到；此問題確認消失 |
+
+家屬 onboarding 掃描 QR（回歸測試項）與新增長輩的掃描／手動輸入兩條路徑，皆一併於本輪驗證中操作過，功能正常。
+
+### 尚未完成：階段三（邀請碼）
+
+多長輩資料錯亂只修了藥物與緊急聯絡人兩條線。**邀請碼仍讀全域鍵**，詳見下方「已知問題」。
+
+---
+
 ## 已知問題（未修復）
 
 以下為已確認存在、但刻意未處理的問題，列此備查。
 
-### 🔴 多長輩情境下，藥物與緊急聯絡人會指向錯誤的長輩
+### 邀請碼仍綁最後配對的長輩（階段三未做）
 
-`backendElderId` 是 AsyncStorage 裡的**單一全域鍵**，每次完成配對就被覆蓋成最新那位長輩。但下列功能全都讀這個全域值，**完全忽略畫面上當前選擇的長輩**：
+`generateAndSaveInviteCode()`（`ProfileService.ts`）仍讀全域 `backendElderId`，未比照藥物／緊急聯絡人改為接受明確的 `elderId` 參數。多長輩情境下，管理員無法選擇要為哪位長輩產生邀請碼——一律綁定「最後一次配對／產碼的那位」。
 
-| 位置 | 行為 |
-|---|---|
-| `MedicationStorageService` 的 `getMedications` / `addMedication` / `updateMedication` / `deleteMedication` | 四支都呼叫內部的 `getBackendElderId()`。函式簽章雖有 `elderId` 參數，但**只用於本機 fallback，後端呼叫一律用全域值** |
-| `EmergencyContactService` | 同樣讀全域值 |
-| `generateAndSaveInviteCode()` | 同樣讀全域值（邀請碼永遠綁最後配對的長輩） |
-
-**實際後果**：家屬配對長輩 A、再配對長輩 B（全域值變成 B）之後，在藥物管理頁把 tab 切到 A，讀到的是 **B 的藥物**；新增一筆藥物會寫進 **B** 的清單。緊急聯絡人同理。畫面上的長輩 tab（`selectedElderId = elder.pairCode`）對後端查詢毫無作用。
-
-`StepTrendChart` 是唯一例外——它吃 `elderId` prop（來自 `PairedElder.elderId`），所以步數趨勢正確分長輩。
-
-**資料其實是齊的**：`PairedElder` 清單每筆都存了自己的 `elderId`，只是那些 service 沒有使用。修法方向是把 `MedicationStorageService` / `EmergencyContactService` 的簽章改成強制傳入 `elderId`，由畫面從 `PairedElder.elderId` 提供，並廢除 `backendElderId` 在家屬端的用途（長輩端仍需保留，那裡它代表「自己」）。牽涉四到五支檔案。
-
-> 註：此問題**早於**配對路徑改造就存在，`AddElderModal` 改走掃描流程並未使其惡化，也未修復它。
+修法方向：`generateAndSaveInviteCode(elderId?: string)` 接受參數，`InviteModal` 需比照藥物頁新增長輩選擇 tab bar，讓管理員先選長輩再產生邀請碼。屬於「多長輩資料錯亂」修復的第三階段，尚未排入。
 
 ### 🔴 「重新綁定裝置」產生的是後端不存在的假碼
 
